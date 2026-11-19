@@ -97,6 +97,37 @@ for (const mode of PI_MODES) {
 			assert.equal(host.host.store.chat(sessionId)?.title, "Say hello");
 		});
 
+		test("publishes a session created as ahp-session:/<id> under that URI", async () => {
+			// Current VS Code builds create sessions on a host they do not recognize as
+			// their own under `ahp-session:/<id>` and derive the default chat from it.
+			const { session, chat } = await newSession(host, client, "ahp-session");
+			assert.match(session, /^ahp-session:\//);
+			const added = await client.waitFor(
+				(m) =>
+					m.method === "root/sessionAdded" && parseSessionUri(m.params.summary.resource) === parseSessionUri(session),
+			);
+			assert.equal(added.params.summary.resource, session);
+			assert.equal(client.sessions.get(session)?.defaultChat, chat);
+
+			host.faux.setResponses([fauxAssistantMessage("ok")]);
+			const turnId = startTurn(client, chat, "Say ok");
+			await client.waitFor((m) => m.params?.action?.type === "chat/turnComplete" && m.params.action.turnId === turnId);
+			const idle = await client.waitFor(
+				(m) =>
+					m.method === "root/sessionSummaryChanged" &&
+					parseSessionUri(m.params.session) === parseSessionUri(session) &&
+					m.params.changes.status !== undefined &&
+					(m.params.changes.status & SessionStatus.InProgress) === 0,
+			);
+			assert.equal(idle.params.session, session, "the idle summary names the session as the client created it");
+			assert.equal(client.sessions.get(session)?.chats[0]?.resource, chat);
+
+			const list = await client.request("listSessions", { channel: "ahp-root://" });
+			const listed = list.items.find((item: any) => parseSessionUri(item.resource) === parseSessionUri(session));
+			assert.equal(listed?.resource, session);
+			assert.equal(listed?.chats?.[0]?.resource, chat);
+		});
+
 		test("maps tool calls to completed tool call parts", async () => {
 			const { chat } = await newSession(host, client);
 			await writeFile(join(host.cwd, "notes.txt"), "the secret is 42\n");
@@ -351,6 +382,43 @@ for (const mode of PI_MODES) {
 				await reconnected.waitFor(
 					(m) => m.params?.action?.type === "chat/turnComplete" && m.params.action.turnId === next,
 				);
+				reconnected.close();
+			} finally {
+				await second.cleanup();
+			}
+		});
+
+		test("keeps an ahp-session:/<id> session's URIs across a restart", async () => {
+			const first = await startHost({ mode });
+			const client = await TestClient.connect(first.url);
+			await client.initialize();
+			const created = await newSession(first, client, "ahp-session");
+			const legacy = await newSession(first, client);
+			for (const { chat } of [created, legacy]) {
+				first.faux.setResponses([fauxAssistantMessage("Saved.")]);
+				const turnId = startTurn(client, chat, "Keep this");
+				await client.waitFor(
+					(m) => m.params?.action?.type === "chat/turnComplete" && m.params.action.turnId === turnId,
+				);
+			}
+			client.close();
+			await first.stop();
+
+			const second = await startHost({ dir: first.dir, mode });
+			try {
+				const reconnected = await TestClient.connect(second.url);
+				await reconnected.initialize();
+				const list = await reconnected.request("listSessions", { channel: "ahp-root://" });
+				const listed = (session: string) =>
+					list.items.find((item: any) => parseSessionUri(item.resource) === parseSessionUri(session));
+				assert.equal(listed(created.session)?.resource, created.session, "listed under the scheme it was created with");
+				assert.equal(listed(created.session)?.chats?.[0]?.resource, created.chat);
+				assert.equal(listed(legacy.session)?.resource, legacy.session, "pi:/ sessions keep the pi scheme");
+
+				// Loading the session from disk publishes it under the same URIs.
+				const snapshot = await reconnected.request("subscribe", { channel: created.session });
+				assert.equal(snapshot.snapshot.resource, created.session);
+				assert.equal(snapshot.snapshot.state.defaultChat, created.chat);
 				reconnected.close();
 			} finally {
 				await second.cleanup();

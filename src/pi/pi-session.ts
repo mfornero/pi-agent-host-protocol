@@ -21,7 +21,7 @@ import {
 } from "@microsoft/agent-host-protocol";
 import type { Logger } from "../core/logger.ts";
 import type { StateStore } from "../core/state-store.ts";
-import { chatUri, fileUri, PROVIDER, pathFromFileUri, sessionUri } from "../core/uris.ts";
+import { fileUri, PROVIDER, pathFromFileUri } from "../core/uris.ts";
 import type { ArchiveStore } from "../host/archive-store.ts";
 import type { ImageInput, PiAgent, PiBackend, PiEvent, PromptInput } from "./agent.ts";
 import { backgroundWorkActions, backgroundWorkMeta } from "./background-work.ts";
@@ -168,7 +168,7 @@ export class PiSession {
 
 	/** The chat's URI. */
 	get chat(): string {
-		return this.#binding.kind === "fork" ? this.#binding.chat : chatUri(this.id);
+		return this.#binding.kind === "fork" ? this.#binding.chat : this.#ctx.store.defaultChatResource(this.id);
 	}
 
 	get isFork(): boolean {
@@ -325,7 +325,7 @@ export class PiSession {
 		const session = this.#ctx.store.session(this.id);
 		const chat = this.#ctx.store.chat(this.id);
 		return {
-			resource: sessionUri(this.id),
+			resource: this.#ctx.store.sessionResource(this.id),
 			provider: PROVIDER,
 			title: session?.title ?? UNTITLED,
 			status: chat?.status ?? SessionStatus.Idle,
@@ -1070,7 +1070,7 @@ export class PiSession {
 	}
 
 	#dispatchSession(action: StateAction): void {
-		this.#ctx.store.dispatch(sessionUri(this.sessionId), action);
+		this.#ctx.store.dispatch(this.#ctx.store.sessionResource(this.sessionId), action);
 	}
 
 	#chatSummary(title: string, status: SessionStatus, modifiedAt: string): ChatSummary & Pick<ChatState, "resource"> {
@@ -1096,7 +1096,7 @@ export class PiSession {
 			lifecycle,
 			activeClients: [],
 			chats: [this.#chatSummary(title, status, this.createdAt)],
-			defaultChat: chatUri(this.id),
+			defaultChat: this.#ctx.store.defaultChatResource(this.id),
 		};
 	}
 }

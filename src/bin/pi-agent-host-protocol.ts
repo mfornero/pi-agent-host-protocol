@@ -8,6 +8,7 @@ import { archivePath, fileArchiveStore } from "../host/archive-store.ts";
 import { BridgeServer, HostAlreadyRunningError } from "../host/bridges.ts";
 import { fileForkStore, forkStorePath } from "../host/fork-store.ts";
 import { type PiDirs, piDirsEnv, resolvePiDirs } from "../host/pi-dirs.ts";
+import { fileSchemeStore, schemeStorePath } from "../host/scheme-store.ts";
 import { loadSettings, migrateSettings, saveSettings, settingsPath } from "../host/settings.ts";
 import { PI_MODES, type PiBackend, type PiMode, parsePiMode } from "../pi/agent.ts";
 import { BACKGROUND_WORK_INTERVAL_MS } from "../pi/background-work.ts";
@@ -125,10 +126,14 @@ async function main(): Promise<void> {
 	const forks = await fileForkStore(forkStorePath(settingsPath()), (error) =>
 		logger.warn("could not save forked chats", { error: error instanceof Error ? error.message : String(error) }),
 	);
+	const schemes = await fileSchemeStore(schemeStorePath(settingsPath()), (error) =>
+		logger.warn("could not save session schemes", { error: error instanceof Error ? error.message : String(error) }),
+	);
 	const agentHost = new AgentHost({
 		backend,
 		archive,
 		forks,
+		schemes,
 		idleTimeoutMs,
 		backgroundWorkIntervalMs: piMode === "rpc" ? BACKGROUND_WORK_INTERVAL_MS : 0,
 		defaultDirectory: values.cwd ?? process.cwd(),

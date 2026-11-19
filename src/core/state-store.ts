@@ -19,11 +19,23 @@ import {
 	type TerminalState,
 	terminalReducer,
 } from "@microsoft/agent-host-protocol";
-import { type ChannelRef, type ChatRef, chatUri, parseChannel, ROOT_CHANNEL, sessionUri } from "./uris.ts";
+import {
+	type ChannelRef,
+	type ChatRef,
+	chatUri,
+	PROVIDER,
+	parseChannel,
+	ROOT_CHANNEL,
+	type SessionScheme,
+	sessionUri,
+} from "./uris.ts";
 
 const DEFAULT_REPLAY_CAPACITY = 10_000;
 
 export type EnvelopeListener = (envelope: ActionEnvelope) => void;
+
+/** The scheme a session is published under (see `uris.ts`). */
+export type SessionSchemeOf = (sessionId: string) => SessionScheme;
 
 /** Channels addressed by their exact URI rather than a session id. */
 export type ExactChannel =
@@ -53,11 +65,13 @@ export class StateStore {
 	readonly #listeners = new Set<EnvelopeListener>();
 	readonly #replay: ActionEnvelope[] = [];
 	readonly #replayCapacity: number;
+	readonly #schemeOf: SessionSchemeOf;
 	#seq = 0;
 
-	constructor(root: RootState, replayCapacity = DEFAULT_REPLAY_CAPACITY) {
+	constructor(root: RootState, replayCapacity = DEFAULT_REPLAY_CAPACITY, schemeOf: SessionSchemeOf = () => PROVIDER) {
 		this.#root = root;
 		this.#replayCapacity = replayCapacity;
+		this.#schemeOf = schemeOf;
 	}
 
 	get serverSeq(): number {
@@ -114,9 +128,19 @@ export class StateStore {
 		return this.#forkRefs.get(uri) ?? parseChannel(uri);
 	}
 
+	/** The URI a session is published at. */
+	sessionResource(sessionId: string): string {
+		return sessionUri(sessionId, this.#schemeOf(sessionId));
+	}
+
+	/** The URI a session's default chat is published at. */
+	defaultChatResource(sessionId: string): string {
+		return chatUri(sessionId, this.#schemeOf(sessionId));
+	}
+
 	/** The URI a chat is published at. */
 	chatResource(ref: ChatRef): string {
-		return this.#forkUris.get(ref.chatId) ?? chatUri(ref.sessionId);
+		return this.#forkUris.get(ref.chatId) ?? this.defaultChatResource(ref.sessionId);
 	}
 
 	/** Registers a terminal or resource-watch channel at `uri` without emitting actions. */
@@ -167,7 +191,7 @@ export class StateStore {
 				return { resource: ROOT_CHANNEL, state: this.#root, fromSeq };
 			case "session": {
 				const state = this.#sessions.get(ref.sessionId);
-				return state && { resource: sessionUri(ref.sessionId), state, fromSeq };
+				return state && { resource: this.sessionResource(ref.sessionId), state, fromSeq };
 			}
 			case "chat": {
 				const state = this.#chats.get(ref.chatId);
@@ -204,7 +228,7 @@ export class StateStore {
 				const state = this.#sessions.get(ref.sessionId);
 				if (!state) return undefined;
 				this.#sessions.set(ref.sessionId, sessionReducer(state, action as SessionAction));
-				resource = sessionUri(ref.sessionId);
+				resource = this.sessionResource(ref.sessionId);
 				break;
 			}
 			case "chat": {

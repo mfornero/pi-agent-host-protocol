@@ -33,6 +33,8 @@ import {
 	parseSessionUri,
 	pathFromFileUri,
 	ROOT_CHANNEL,
+	type SessionScheme,
+	sessionSchemeOf,
 	sessionUri,
 } from "../core/uris.ts";
 import type { PiBackend } from "../pi/agent.ts";
@@ -62,6 +64,7 @@ import { Connection, type ConnectionHandler, type RESPONDED, type Reply } from "
 import { type ForkRecord, type ForkStore, forkByChat, forksOf, memoryForkStore } from "./fork-store.ts";
 import { ResourceWatchService } from "./resource-watches.ts";
 import { ResourceService } from "./resources.ts";
+import { memorySchemeStore, type SchemeStore } from "./scheme-store.ts";
 import { TerminalService } from "./terminals.ts";
 
 export interface AgentHostOptions {
@@ -88,6 +91,8 @@ export interface AgentHostOptions {
 	archive?: ArchiveStore;
 	/** Persisted forked chats. Kept in memory when unset. */
 	forks?: ForkStore;
+	/** Persisted session schemes. Kept in memory when unset. */
+	schemes?: SchemeStore;
 }
 
 type ActionOutcome = { kind: "accepted" } | { kind: "rejected"; reason: string } | { kind: "ignored" };
@@ -150,6 +155,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 	readonly now: () => number;
 	readonly archive: ArchiveStore;
 	readonly forks: ForkStore;
+	readonly schemes: SchemeStore;
 
 	constructor(options: AgentHostOptions) {
 		this.backend = options.backend;
@@ -159,6 +165,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		this.now = options.now ?? Date.now;
 		this.archive = options.archive ?? memoryArchiveStore();
 		this.forks = options.forks ?? memoryForkStore();
+		this.schemes = options.schemes ?? memorySchemeStore();
 		this.#idleTimeoutMs = options.idleTimeoutMs ?? 0;
 		if (this.#idleTimeoutMs > 0) {
 			this.#idleTimer = setInterval(() => void this.suspendIdleSessions(), sweepInterval(this.#idleTimeoutMs));
@@ -169,19 +176,23 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			this.#backgroundTimer = setInterval(() => void this.refreshBackgroundWork(), backgroundWorkIntervalMs);
 			this.#backgroundTimer.unref();
 		}
-		this.store = new StateStore({
-			agents: [
-				{
-					provider: PROVIDER,
-					displayName: "Pi",
-					description: "The pi coding agent",
-					models: [],
-					capabilities: { multipleChats: { fork: true } },
-				},
-			],
-			activeSessions: 0,
-			terminals: [],
-		});
+		this.store = new StateStore(
+			{
+				agents: [
+					{
+						provider: PROVIDER,
+						displayName: "Pi",
+						description: "The pi coding agent",
+						models: [],
+						capabilities: { multipleChats: { fork: true } },
+					},
+				],
+				activeSessions: 0,
+				terminals: [],
+			},
+			undefined,
+			(sessionId) => this.schemes.schemeOf(sessionId),
+		);
 		this.#terminals = new TerminalService(this.store, this.logger, this.#defaultDirectory);
 		this.#watches = new ResourceWatchService(this.store, this.logger);
 		this.store.onEnvelope((envelope) => {
@@ -313,6 +324,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		await this.#watches.disposeAll();
 		await this.backend.dispose();
 		await this.archive.flush();
+		await this.schemes.flush();
 	}
 
 	/** Every loaded chat: sessions' default chats and forked chats. */
@@ -362,7 +374,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 	// ── SessionHostContext ────────────────────────────────────────────────
 
 	summaryChanged(sessionId: string, changes: SessionSummaryChanges): void {
-		this.#notifyRoot("root/sessionSummaryChanged", { session: sessionUri(sessionId), changes });
+		this.#notifyRoot("root/sessionSummaryChanged", { session: this.store.sessionResource(sessionId), changes });
 	}
 
 	activityChanged(): void {
@@ -692,6 +704,8 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		if (this.#sessions.has(id))
 			throw new ProtocolError(AhpErrorCodes.SessionAlreadyExists, `Session already exists: ${channel}`);
 
+		// Published under the scheme the client chose, which its derived chat URI depends on.
+		this.schemes.setScheme(id, sessionSchemeOf(channel) ?? PROVIDER);
 		const session = PiSession.create(this, id, cwd);
 		this.#sessions.set(id, session);
 		this.logger.debug("session created", { session: id, cwd });
@@ -737,9 +751,11 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		}
 		this.#sessions.delete(id);
 		this.logger.debug("session disposed", { session: id });
+		const resource = this.store.sessionResource(id);
 		this.store.removeSession(id);
+		this.schemes.setScheme(id, PROVIDER);
 		await session.dispose();
-		this.#notifyRoot("root/sessionRemoved", { session: sessionUri(id) });
+		this.#notifyRoot("root/sessionRemoved", { session: resource });
 		return null;
 	}
 
@@ -758,7 +774,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 				const fork = byId.get(id);
 				return fork ? [forkedChatSummary(fork, record)] : [];
 			});
-			all.push(catalogSummary(info, this.archive.isArchived(info.id), forkedChats));
+			all.push(catalogSummary(info, this.archive.isArchived(info.id), this.schemes.schemeOf(info.id), forkedChats));
 		}
 		all.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
 		const offset = typeof params.cursor === "string" ? Number.parseInt(params.cursor, 10) || 0 : 0;
@@ -824,7 +840,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 				const session = this.#sessions.get(ref.sessionId);
 				if (!session) return { kind: "ignored" };
 				if (!ACCEPTED_SESSION_ACTIONS.has(action.type)) return unsupported;
-				this.store.dispatch(sessionUri(ref.sessionId), action, origin);
+				this.store.dispatch(this.store.sessionResource(ref.sessionId), action, origin);
 				session.onSessionAction(action);
 				return { kind: "accepted" };
 			}
@@ -854,18 +870,23 @@ function catalogTitle(info: SessionInfo): string {
 	return info.name || (firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine) || "Untitled session";
 }
 
-function catalogSummary(info: SessionInfo, archived: boolean, forkedChats: SessionChatSummary[] = []): SessionSummary {
+function catalogSummary(
+	info: SessionInfo,
+	archived: boolean,
+	scheme: SessionScheme,
+	forkedChats: SessionChatSummary[] = [],
+): SessionSummary {
 	const title = catalogTitle(info);
 	const status = restoredStatus(archived);
 	return {
-		resource: sessionUri(info.id),
+		resource: sessionUri(info.id, scheme),
 		provider: PROVIDER,
 		title,
 		status,
 		createdAt: info.created.toISOString(),
 		modifiedAt: info.modified.toISOString(),
 		workingDirectories: [fileUri(info.cwd)],
-		chats: [{ resource: chatUri(info.id), title, status }, ...forkedChats],
+		chats: [{ resource: chatUri(info.id, scheme), title, status }, ...forkedChats],
 	};
 }
 

@@ -6,6 +6,7 @@ Known issues and features not yet implemented.
 
 - **Not yet tested against a real VS Code Agents window.** The VS Code workarounds (URI shapes, session renames sent to the chat channel, `reconnect` arriving without a `channel`) come from reading VS Code's source and Qusic/pi-ahp. The tests use a client that imitates them.
 - No CI run has been observed yet. The workflow was added together with the first commit.
+- **Session URI schemes:** sessions VS Code created as `ahp-session:/<id>` before `session-schemes.json` existed are still published as `pi:/<id>`. VS Code may show them with a nested second chat. See [specs/session-uris.md](specs/session-uris.md).
 
 ## Protocol coverage (milestone 1)
 

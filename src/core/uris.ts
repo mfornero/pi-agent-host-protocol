@@ -9,28 +9,39 @@ export const PROVIDER = "pi";
  * URI shapes.
  *
  * VS Code does not use the host's published session/chat URIs verbatim: it
- * addresses a session as `<provider>:/<id>` and derives its default chat as
- * `ahp-chat://default/<base64url(sessionUri)>`. Rather than rewriting traffic
- * per connection, this host *publishes* exactly those shapes (AHP requires
- * clients to treat URIs as opaque, so other clients are unaffected) and
- * *accepts* both those and the spec's canonical `ahp-session:/<id>` /
- * `ahp-chat:/<id>` forms.
+ * picks a session's URI when it creates the session and derives its default
+ * chat as `ahp-chat://default/<base64url(sessionUri)>`. Older VS Code builds
+ * address every session as `<provider>:/<id>`; current builds create sessions
+ * on hosts they do not recognize as their own under the spec's canonical
+ * `ahp-session:/<id>`. Rather than rewriting traffic per connection, this host
+ * *publishes* each session under the scheme it was created with (`pi` for
+ * sessions it did not create, such as pi's existing session files), so the
+ * session and default chat URIs match what the creating client derived. It
+ * *accepts* both session schemes and the canonical `ahp-chat:/<id>` form.
  */
-export function sessionUri(id: string): string {
-	return `${PROVIDER}:/${id}`;
+export type SessionScheme = typeof PROVIDER | "ahp-session";
+
+export function sessionUri(id: string, scheme: SessionScheme = PROVIDER): string {
+	return `${scheme}:/${id}`;
 }
 
-export function chatUri(sessionId: string): string {
-	return `ahp-chat://default/${Buffer.from(sessionUri(sessionId), "utf8").toString("base64url")}`;
+export function chatUri(sessionId: string, scheme: SessionScheme = PROVIDER): string {
+	return `ahp-chat://default/${Buffer.from(sessionUri(sessionId, scheme), "utf8").toString("base64url")}`;
 }
 
-const SESSION_URI = /^(?:ahp-session|pi):\/([^/?#]+)$/i;
+const SESSION_URI = /^(ahp-session|pi):\/([^/?#]+)$/i;
+
+/** Returns the scheme a session URI is spelled with, or `undefined` if `uri` is not a session URI. */
+export function sessionSchemeOf(uri: string): SessionScheme | undefined {
+	const scheme = SESSION_URI.exec(uri)?.[1]?.toLowerCase();
+	return scheme === "ahp-session" ? "ahp-session" : scheme === PROVIDER ? PROVIDER : undefined;
+}
 const CANONICAL_CHAT_URI = /^ahp-chat:\/([^/?#]+)$/i;
 const DERIVED_CHAT_URI = /^ahp-chat:\/\/[^/]+\/([^/?#]+)$/i;
 
 /** Returns the session id addressed by a session URI, or `undefined`. */
 export function parseSessionUri(uri: string): string | undefined {
-	return SESSION_URI.exec(uri)?.[1];
+	return SESSION_URI.exec(uri)?.[2];
 }
 
 /** Returns the id of the session owning a chat URI, or `undefined`. */

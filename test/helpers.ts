@@ -24,6 +24,7 @@ import { AgentHost } from "../src/host/agent-host.ts";
 import { fileArchiveStore } from "../src/host/archive-store.ts";
 import { BridgeServer } from "../src/host/bridges.ts";
 import { fileForkStore } from "../src/host/fork-store.ts";
+import { fileSchemeStore } from "../src/host/scheme-store.ts";
 import type { PiBackend, PiMode } from "../src/pi/agent.ts";
 import { EmbeddedBackend } from "../src/pi/embedded-backend.ts";
 import { RpcBackend } from "../src/pi/rpc-backend.ts";
@@ -93,6 +94,7 @@ export async function startHost(
 		now: options.now,
 		archive: await fileArchiveStore(join(dir, "archived-sessions.json")),
 		forks: await fileForkStore(join(dir, "forked-chats.json")),
+		schemes: await fileSchemeStore(join(dir, "session-schemes.json")),
 	});
 	await host.refreshAgents();
 	const listener: Listener = await listen(host, { host: "127.0.0.1", port: 0, token: options.token });
@@ -337,9 +339,16 @@ export function vscodeChatUri(sessionUri: string): string {
 	return `ahp-chat://default/${Buffer.from(sessionUri).toString("base64url")}`;
 }
 
-/** Creates a session in the test workspace, subscribes to it and its default chat. */
-export async function newSession(host: TestHost, client: TestClient): Promise<{ session: string; chat: string }> {
-	const session = `pi:/${crypto.randomUUID()}`;
+/**
+ * Creates a session in the test workspace, subscribes to it and its default
+ * chat. `scheme` is the session URI scheme the client creates it under.
+ */
+export async function newSession(
+	host: TestHost,
+	client: TestClient,
+	scheme: "pi" | "ahp-session" = "pi",
+): Promise<{ session: string; chat: string }> {
+	const session = `${scheme}:/${crypto.randomUUID()}`;
 	await client.request("createSession", {
 		channel: session,
 		provider: "pi",
