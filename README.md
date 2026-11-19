@@ -128,6 +128,7 @@ See [docs/live-tui-sessions.md](docs/live-tui-sessions.md).
 - **Terminals:** `createTerminal` and `disposeTerminal` run your `$SHELL` in a real pty in the requested directory. Keystrokes, resizes, renames, `clear` and exit codes all work, and `RootState.terminals` lists every terminal.
 - **Skills and prompt templates:** each session publishes the skills and prompt templates pi loaded as read-only customizations, the root state lists pi's global ones as the agent's customizations (for clients starting a session), and typing `/` at the start of a message completes them. See [docs/skills.md](docs/skills.md).
 - **Resource watches:** `createResourceWatch` watches files and directories with `@parcel/watcher`, recursively or not, with include/exclude globs. A watch is released when its last subscriber unsubscribes. See [docs/terminals-and-watches.md](docs/terminals-and-watches.md).
+- **Review comments:** each session has an annotations channel (`<session>/annotations`), so comments added in VS Code's Agents window are kept by the host (`~/.pi/agent-host-protocol/annotations.json`). Submitting them sends each comment, with its file, lines and selection, to pi, and a completed turn marks them resolved. See [specs/annotations.md](specs/annotations.md).
 - **Extension dialogs** (`rpc` mode): `ctx.ui.select`, `confirm`, `input` and `editor` from a pi extension become AHP input requests in the running turn, which VS Code shows as questions above the chat input, and `ctx.ui.notify` appears in the turn. See [specs/extension-dialogs.md](specs/extension-dialogs.md).
 
 ### Known limitations
@@ -150,7 +151,7 @@ Status is one of: supported; partial (works with the noted restriction); stub (a
 | `initialize` | supported | Negotiates protocol 0.9.x or 1.x. Unsupported versions get `-32005` with `supportedVersions`. |
 | `ping` | supported | Answered at any time, including before `initialize`. |
 | `reconnect` | supported | Replays missed actions from a buffer, or sends fresh snapshots when the gap is too large. A client this host instance never initialized (for example after a host restart) gets `NotFound` (`-32008`), so it runs `initialize` again and picks up the current capabilities. |
-| `subscribe` / `unsubscribe` | supported | Root, session, chat, terminal and resource-watch channels. Subscribing to a saved pi session loads its history. |
+| `subscribe` / `unsubscribe` | supported | Root, session, chat, annotations, terminal and resource-watch channels. Subscribing to a saved pi session loads its history. |
 | `createSession` | supported | Accepts any local working directory. The session id becomes the pi session id. |
 | `disposeSession` | partial | Discards empty sessions only. Sessions with history stay listed, and pi session files are never deleted. |
 | `listSessions` | supported | Live sessions plus pi sessions on disk, newest first, paginated. |
@@ -173,6 +174,7 @@ Status is one of: supported; partial (works with the noted restriction); stub (a
 |---|---|---|
 | Chat | `chat/turnStarted`, `chat/turnCancelled`, `chat/turnResume` (after a resumable model-server error), `chat/truncated` (not while a pi terminal drives the session), `chat/pendingMessageSet` / `chat/pendingMessageRemoved` (steering and queued messages), `chat/queuedMessagesReordered`, `chat/draftChanged`, `chat/isReadChanged`, `chat/isArchivedChanged`, `chat/inputAnswerChanged` / `chat/inputCompleted` (for an open extension dialog) | `chat/toolCallConfirmed` and `chat/toolCallResultConfirmed` (tools never wait for approval), answers to input requests that are not open, working-directory changes, client-executed tools |
 | Session | `session/titleChanged` (saved to pi; VS Code's form addressed to a chat renames a forked chat alone, or the session for its default chat), `session/isReadChanged`, `session/isArchivedChanged`, `session/activeClientSet` / `session/activeClientRemoved`, `session/configChanged` | Working-directory, customization and MCP actions |
+| Annotations | `annotations/set`, `annotations/updated`, `annotations/removed`, `annotations/entrySet`, `annotations/entryRemoved` | Everything else |
 | Terminal | `terminal/input`, `terminal/resized`, `terminal/claimed`, `terminal/titleChanged`, `terminal/cleared` | Host-only actions such as `terminal/data` |
 | Root | `root/configChanged` (no root config exists, so it has no effect) | Everything else |
 | Resource watch | None | Everything |
@@ -186,10 +188,11 @@ Rejected actions are echoed only to the sending client, with a `rejectionReason`
 | Root | `root/agentsChanged` (the pi agent and its available models), `root/activeSessionsChanged`, `root/terminalsChanged`; notifications `root/sessionAdded`, `root/sessionRemoved`, `root/sessionSummaryChanged` (also when the background work count in `_meta` changes) |
 | Session | `session/ready`, `session/creationFailed`, `session/titleChanged`, `session/chatAdded` (forks), `session/chatUpdated`, `session/activityChanged`, `session/customizationsChanged` (pi's skills and prompt templates) |
 | Chat | `chat/turnStarted` (queued messages, and runs started in a pi terminal), `chat/responsePart`, `chat/delta`, `chat/reasoning`, `chat/toolCallStart` / `chat/toolCallDelta` / `chat/toolCallReady` / `chat/toolCallContentChanged` / `chat/toolCallComplete`, `chat/activityChanged`, `chat/usage`, `chat/turnComplete`, `chat/error` (with `resumable` for model-server errors), `chat/inputRequested` / `chat/inputCompleted` (extension dialogs, `rpc` mode), `chat/pendingMessageRemoved`, `chat/backgroundWorkSet` / `chat/backgroundWorkRemoved` (`rpc` mode) |
+| Annotations | `annotations/updated` (marks submitted review comments resolved when their turn completes) |
 | Terminal | `terminal/data`, `terminal/exited` |
 | Resource watch | `resourceWatch/changed` |
 
-Not used: changesets, MCP, annotations, automations, canvases, tool confirmations, terminal command detection, and OTLP telemetry.
+Not used: changesets, MCP, automations, canvases, tool confirmations, terminal command detection, and OTLP telemetry.
 
 ## Design notes
 

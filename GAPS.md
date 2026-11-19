@@ -17,7 +17,7 @@ Known issues and features not yet implemented.
 - **History gaps:** compaction summaries, custom messages and bash executions are not shown in reloaded history.
 - **pi extension dialogs** resolve with their defaults in embedded mode. See [Extension dialogs](#extension-dialogs) for rpc mode.
 - **File edits** are shown as text results, not file diffs.
-- **Not implemented:** changesets, MCP and automations.
+- **Not implemented:** changesets, MCP and automations. Annotations hold VS Code's review comments only; see [Review comments](#review-comments-annotations).
 - **Activity text is English only and based on tool names:** custom tools from extensions show `Running <tool>`. Retries and compaction have no activity text of their own.
 - **Read-only file access:** `resourceWrite` and the other write operations are refused.
 
@@ -100,6 +100,15 @@ See [specs/extension-dialogs.md](specs/extension-dialogs.md).
 - **No status line or widgets:** `setStatus`, `setWidget`, `setTitle` and `set_editor_text` are ignored. An extension's footer status, such as a plan's progress, is not shown.
 - **Notifications outside a turn** are logged only, and ones pi sends while it starts (such as an extension's greeting) are dropped. One an extension sends just after its turn was cancelled can appear in the next turn.
 - **No multi-line editor:** `editor` dialogs are a text question with the prefill as its default value. VS Code may show it as a single-line field.
+- **Not yet tried in a real VS Code window**, only against the test client and VS Code's source.
+
+## Review comments (annotations)
+
+See [specs/annotations.md](specs/annotations.md).
+
+- **No comment tools:** pi reads submitted comments as prompt text. It cannot list, reply to or add comments, as VS Code's own host lets its agent do.
+- **Resolved on completion:** a completed turn resolves every comment it was given, whether or not the agent addressed each one. A comment sent as a steering message is not resolved.
+- **Forks share the session's channel:** a comment submitted in a forked chat is read from the session's channel and resolved there.
 - **Not yet tried in a real VS Code window**, only against the test client and VS Code's source.
 
 ## Terminals and resource watches

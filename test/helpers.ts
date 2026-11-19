@@ -7,6 +7,9 @@ import { type FauxResponseStep, fauxAssistantMessage, fauxProvider } from "@eare
 import { ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
 	type ActionEnvelope,
+	type AnnotationsAction,
+	type AnnotationsState,
+	annotationsReducer,
 	type ChatAction,
 	type ChatState,
 	chatReducer,
@@ -21,6 +24,7 @@ import {
 import WebSocket from "ws";
 import { type Logger, silentLogger } from "../src/core/logger.ts";
 import { AgentHost } from "../src/host/agent-host.ts";
+import { fileAnnotationStore } from "../src/host/annotation-store.ts";
 import { fileArchiveStore } from "../src/host/archive-store.ts";
 import { BridgeServer } from "../src/host/bridges.ts";
 import { fileForkStore } from "../src/host/fork-store.ts";
@@ -100,6 +104,7 @@ export async function startHost(
 		archive: await fileArchiveStore(join(dir, "archived-sessions.json")),
 		forks: await fileForkStore(join(dir, "forked-chats.json")),
 		schemes: await fileSchemeStore(join(dir, "session-schemes.json")),
+		annotations: await fileAnnotationStore(join(dir, "annotations.json")),
 	});
 	await host.refreshAgents();
 	const listener: Listener = await listen(host, { host: "127.0.0.1", port: 0, token: options.token });
@@ -230,6 +235,7 @@ export class TestClient {
 	root: RootState | undefined;
 	readonly sessions = new Map<string, SessionState>();
 	readonly chats = new Map<string, ChatState>();
+	readonly annotations = new Map<string, AnnotationsState>();
 	#nextId = 1;
 	#clientSeq = 0;
 	readonly clientId = crypto.randomUUID();
@@ -309,7 +315,9 @@ export class TestClient {
 	#applySnapshot(snapshot: Snapshot): void {
 		if (snapshot.resource === "ahp-root://") this.root = snapshot.state as RootState;
 		else if (snapshot.resource.startsWith("ahp-chat:")) this.chats.set(snapshot.resource, snapshot.state as ChatState);
-		else this.sessions.set(snapshot.resource, snapshot.state as SessionState);
+		else if (snapshot.resource.endsWith("/annotations")) {
+			this.annotations.set(snapshot.resource, snapshot.state as AnnotationsState);
+		} else this.sessions.set(snapshot.resource, snapshot.state as SessionState);
 	}
 
 	#apply(envelope: ActionEnvelope): void {
@@ -319,6 +327,8 @@ export class TestClient {
 			this.root = rootReducer(this.root, action as RootAction);
 		} else if (this.chats.has(channel)) {
 			this.chats.set(channel, chatReducer(this.chats.get(channel)!, action as ChatAction));
+		} else if (this.annotations.has(channel)) {
+			this.annotations.set(channel, annotationsReducer(this.annotations.get(channel)!, action as AnnotationsAction));
 		} else if (this.sessions.has(channel)) {
 			this.sessions.set(channel, sessionReducer(this.sessions.get(channel)!, action as SessionAction));
 		}

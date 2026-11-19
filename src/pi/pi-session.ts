@@ -24,8 +24,10 @@ import {
 import type { Logger } from "../core/logger.ts";
 import type { StateStore } from "../core/state-store.ts";
 import { fileUri, PROVIDER, pathFromFileUri } from "../core/uris.ts";
+import type { AnnotationStore } from "../host/annotation-store.ts";
 import type { ArchiveStore } from "../host/archive-store.ts";
 import type { ImageInput, PiAgent, PiBackend, PiEvent, PromptInput } from "./agent.ts";
+import { ACT_ON_FEEDBACK_PROMPT, isActOnFeedback, referencedComments } from "./annotations.ts";
 import { backgroundWorkActions, backgroundWorkMeta } from "./background-work.ts";
 import {
 	referencedSkills,
@@ -60,6 +62,8 @@ export interface SessionHostContext {
 	readonly logger: Logger;
 	/** Archived ("done") flags, which pi's session files cannot hold. */
 	readonly archive: ArchiveStore;
+	/** Review comments (annotations), which pi's session files cannot hold either. */
+	readonly annotations: AnnotationStore;
 	/** Publishes `root/sessionSummaryChanged` for this session. */
 	summaryChanged(sessionId: string, changes: SessionSummaryChanges): void;
 	/** Called whenever a session starts or stops running a turn. */
@@ -205,10 +209,12 @@ export class PiSession {
 	static create(ctx: SessionHostContext, id: string, cwd: string): PiSession {
 		const now = new Date().toISOString();
 		const session = new PiSession(ctx, id, cwd, ctx.backend.newSessionManager(cwd, id), now);
-		ctx.store.addSession(id, session.#initialSessionState(UNTITLED, SessionLifecycle.Creating, SessionStatus.Idle), {
-			...session.#chatSummary(UNTITLED, SessionStatus.Idle, now),
-			turns: [],
-		});
+		ctx.store.addSession(
+			id,
+			session.#initialSessionState(UNTITLED, SessionLifecycle.Creating, SessionStatus.Idle),
+			{ ...session.#chatSummary(UNTITLED, SessionStatus.Idle, now), turns: [] },
+			ctx.annotations.annotationsOf(id),
+		);
 		return session;
 	}
 
@@ -313,10 +319,12 @@ export class PiSession {
 			return session;
 		}
 		const status = restoredStatus(ctx.archive.isArchived(id));
-		ctx.store.addSession(id, session.#initialSessionState(title, SessionLifecycle.Ready, status), {
-			...session.#chatSummary(title, status, modifiedAt),
-			turns,
-		});
+		ctx.store.addSession(
+			id,
+			session.#initialSessionState(title, SessionLifecycle.Ready, status),
+			{ ...session.#chatSummary(title, status, modifiedAt), turns },
+			ctx.annotations.annotationsOf(id),
+		);
 		return session;
 	}
 
@@ -359,6 +367,7 @@ export class PiSession {
 			modifiedAt: chat?.modifiedAt ?? this.createdAt,
 			workingDirectories: [fileUri(this.cwd)],
 			...(session?.chats ? { chats: session.chats } : {}),
+			...(session?.annotations ? { annotations: session.annotations } : {}),
 			...(chat?.activity ? { activity: chat.activity } : {}),
 			...(chat?.backgroundWork?.length ? { _meta: backgroundWorkMeta(chat.backgroundWork.length) } : {}),
 		};
@@ -742,6 +751,7 @@ export class PiSession {
 		let unsubscribe: (() => void) | undefined;
 		// The first user message of a prompt run is the prompt itself; later ones were steered in.
 		let promptSeen = run.kind !== "prompt";
+		let comments: readonly string[] = [];
 		try {
 			if (!turn.cancelledByClient) {
 				const agent = await this.#ensureAgent();
@@ -769,8 +779,13 @@ export class PiSession {
 					attachments: run.kind === "prompt" ? run.message.attachments?.length : undefined,
 				});
 				this.#hostRun = true;
-				if (run.kind === "prompt") await agent.prompt(await this.#promptInput(run.message));
-				else await agent.resume();
+				if (run.kind === "prompt") {
+					const prompt = await this.#promptInput(run.message);
+					comments = prompt.comments;
+					await agent.prompt(prompt.input);
+				} else {
+					await agent.resume();
+				}
 				outcome = turn.mapper.impliedOutcome();
 			}
 		} catch (error) {
@@ -787,6 +802,7 @@ export class PiSession {
 		this.#closeDialogs();
 		if (!turn.cancelledByClient) turn.mapper.finish(outcome, Date.now() - turn.startedAt);
 		if (!turn.cancelledByClient && outcome.kind === "error" && outcome.resumable) this.#resumableTurn = turn.id;
+		if (!turn.cancelledByClient && outcome.kind === "complete") this.#resolveComments(comments);
 		this.#ctx.logger.debug("turn finished", {
 			session: this.id,
 			turn: turn.id,
@@ -942,9 +958,41 @@ export class PiSession {
 	}
 
 	/** Prompt input for a message, with the skills its completion chips reference later in the text. */
-	async #promptInput(message: Message): Promise<PromptInput> {
+	/** pi's prompt for a message, and the ids of the review comments it asks pi to act on. */
+	async #promptInput(message: Message): Promise<{ input: PromptInput; comments: readonly string[] }> {
 		const commands = await (this.#commands ?? Promise.resolve([])).catch(() => []);
-		return promptInput(message, await skillBlocks(referencedSkills(message, commands)));
+		const store = this.#ctx.store;
+		const comments = referencedComments(
+			message,
+			store.annotationsResource(this.sessionId),
+			store.annotations(this.sessionId)?.annotations ?? [],
+			this.cwd,
+		);
+		const text = isActOnFeedback(message) ? ACT_ON_FEEDBACK_PROMPT : message.text;
+		const context = [
+			...(comments.text ? [comments.text] : []),
+			...(await skillBlocks(referencedSkills(message, commands))),
+		];
+		return { input: promptInput({ ...message, text }, context), comments: comments.ids };
+	}
+
+	/**
+	 * Marks the review comments a completed turn acted on as resolved, which
+	 * is how VS Code learns that the agent handled them (pi has no tool to
+	 * resolve them itself).
+	 */
+	#resolveComments(ids: readonly string[]): void {
+		const store = this.#ctx.store;
+		const channel = store.annotationsResource(this.sessionId);
+		const open = new Set(
+			(store.annotations(this.sessionId)?.annotations ?? []).filter((a) => !a.resolved).map((a) => a.id),
+		);
+		const resolved = ids.filter((id) => open.has(id));
+		for (const annotationId of resolved) {
+			store.dispatch(channel, { type: ActionType.AnnotationsUpdated, annotationId, resolved: true });
+		}
+		if (resolved.length > 0)
+			this.#ctx.logger.debug("review comments resolved", { session: this.id, count: resolved.length });
 	}
 
 	/**
@@ -1089,7 +1137,7 @@ export class PiSession {
 			this.#ctx.logger.debug("steering message sent", { session: this.id, turn: this.#turn.id, message: id });
 			// In a run the TUI started, pi's echo of the message already opens a turn (`#onAgentEvent`).
 			if (this.#turn !== this.#externalRun) this.#steered.push(message);
-			void this.#agent?.then(async (agent) => agent.steer(await this.#promptInput(message))).catch(() => {});
+			void this.#agent?.then(async (agent) => agent.steer((await this.#promptInput(message)).input)).catch(() => {});
 		}
 		const next = chat.queuedMessages?.[0];
 		if (next && !this.#turn && !chat.activeTurn) this.#startPendingTurn(PendingMessageKind.Queued, next);
