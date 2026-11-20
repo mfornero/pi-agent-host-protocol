@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
 	type ChatInputAnswer,
 	ChatInputAnswerState,
@@ -318,6 +319,35 @@ describe("extension dialogs over AHP (rpc)", () => {
 		await complete(next);
 		// The cancelled command's own notice can land in this turn when pi sends it late.
 		assert.equal(markdown(chat, next).at(-1), "last: null", "the extension saw the dialog dismissed");
+	});
+
+	test("shows a dialog from a run an extension command started, as /plan <prompt> does", async () => {
+		const { chat } = await newSession(host, client);
+		host.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("pick_color", {}, { id: "pick" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("Picked."),
+		]);
+		const commandTurn = startTurn(client, chat, "/dialog run choose a color");
+		await complete(commandTurn);
+		const requestAction = await requested(chat);
+		const runTurn = requestAction.params.action.turnId as string | undefined;
+		const request = requestAction.params.action.request;
+		assert.deepEqual(
+			request.questions[0].options.map((option: { label: string }) => option.label),
+			["red", "green"],
+		);
+		const active = client.chats.get(chat)!.activeTurn!;
+		client.dispatch(chat, {
+			type: "chat/inputCompleted",
+			turnId: runTurn ?? active.id,
+			requestId: request.id,
+			response: ChatInputResponseKind.Accept,
+			answers: selected("0"),
+		});
+		await complete(active.id);
+		const last = startTurn(client, chat, "/dialog last");
+		await complete(last);
+		assert.deepEqual(markdown(chat, last), ['last: "red"']);
 	});
 
 	test("dismisses a dialog opened outside a turn, and rejects answers to it", async () => {

@@ -8,7 +8,7 @@ AHP has input requests for this. A host adds a request to the active turn with `
 
 ## Behavior
 
-- **Scope:** RPC mode, in turns the host runs (`src/pi/rpc-agent.ts`, `src/pi/pi-session.ts`). Embedded sessions and sessions a pi terminal drives are unchanged; see Trade-offs.
+- **Scope:** RPC mode, in the running turn of a pi the host started (`src/pi/rpc-agent.ts`, `src/pi/pi-session.ts`): a turn the host started, or a run that pi started on its own and the host shows as a turn. The second case is how `/plan <prompt>` works: the command reports "handled", then starts the planning run itself, and plan mode's question and "plan ready" menu open in that run. Embedded sessions and sessions a pi terminal drives are unchanged; see Trade-offs.
 - **Dialogs** (`src/pi/dialogs.ts`): each `extension_ui_request` dialog becomes one input request with pi's request id and a single required question, `answer`:
 
   | pi dialog | Question | Answered with |
@@ -24,10 +24,11 @@ AHP has input requests for this. A host adds a request to the active turn with `
   - the client cancels the turn, or the turn ends with the dialog still open;
   - a client truncates the chat or a steering message starts a new turn;
   - the session is disposed;
-  - it arrives when no host turn is running, for example from a timer an extension started earlier.
+  - it arrives when no turn is running, for example from a timer an extension started earlier;
+  - a run pi started on its own ends with the dialog still open.
 - **Validation:** `chat/inputAnswerChanged` and `chat/inputCompleted` are rejected with `No open input request` unless they name a dialog that is open.
 - **Status:** the chat status is `InputNeeded` while a request is open, and the session summary follows it, so a session list can show that the session is waiting.
-- **Notifications:** `notify` during a host turn appends a markdown part to the turn, prefixed `**Warning:**` or `**Error:**` for those levels. The part is padded with blank lines, because VS Code joins adjacent markdown parts without a separator. Outside a turn it is logged at debug.
+- **Notifications:** `notify` during a turn appends a markdown part to the turn, prefixed `**Warning:**` or `**Error:**` for those levels. The part is padded with blank lines, because VS Code joins adjacent markdown parts without a separator. Outside a turn it is logged at debug.
 - **Other UI methods** (`setStatus`, `setWidget`, `setTitle`, `set_editor_text`) are ignored, as before.
 
 ## Trade-offs
@@ -42,4 +43,4 @@ AHP has input requests for this. A host adds a request to the active turn with `
 `test/dialogs.test.ts`:
 - Parsing pi's dialog records, mapping each dialog to a question, and mapping answers back, including the cases that cancel.
 - `RpcAgent` answers dialogs with `cancelled` when no handler can show them, forwards a handler's answer, and passes notifications on.
-- End to end against a real `pi --mode rpc` child with `test/fixtures/dialogs.ts` loaded: a select answered by the client, an input answered through a synced draft, a declined confirm, a timeout, a cancelled turn, and a dialog opened outside a turn (dismissed without a request, and an answer to an unknown request rejected).
+- End to end against a real `pi --mode rpc` child with `test/fixtures/dialogs.ts` loaded: a select answered by the client, a select opened by a tool in a run an extension command started (as `/plan <prompt>` does), an input answered through a synced draft, a declined confirm, a timeout, a cancelled turn, and a dialog opened outside a turn (dismissed without a request, and an answer to an unknown request rejected).

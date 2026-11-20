@@ -1032,15 +1032,19 @@ export class PiSession {
 	}
 
 	/**
-	 * Shows an extension dialog as an input request in the running host
-	 * turn. Clients add input requests only to an active turn, so outside
-	 * one (and while a client cancels) the dialog is left to be cancelled.
+	 * Shows an extension dialog as an input request in the running turn: one
+	 * the host started, or a run the agent started on its own, such as the
+	 * planning run `/plan <prompt>` starts after its command returns. Only
+	 * agents the host started get the UI handler, so a pi terminal's dialogs
+	 * never get here. Clients add input requests only to an active turn, so
+	 * outside one (and while a client cancels) the dialog is left to be
+	 * cancelled.
 	 * pi drops a dialog when its timeout passes, so the request is withdrawn
 	 * then too. See specs/extension-dialogs.md.
 	 */
 	#openDialog(dialog: PiDialog): Promise<PiDialogAnswer> | undefined {
 		const turn = this.#turn;
-		if (!this.#hostRun || !turn || turn.cancelledByClient || this.#dialogs.has(dialog.id)) return undefined;
+		if (!turn || turn.cancelledByClient || this.#dialogs.has(dialog.id)) return undefined;
 		return new Promise((resolve) => {
 			const timer = dialog.timeout ? setTimeout(() => this.#closeDialog(dialog.id), dialog.timeout) : undefined;
 			this.#dialogs.set(dialog.id, { turn, dialog, resolve, timer });
@@ -1093,10 +1097,10 @@ export class PiSession {
 		for (const requestId of [...this.#dialogs.keys()]) this.#closeDialog(requestId);
 	}
 
-	/** Adds an extension's notification to the running host turn; other notifications are only logged. */
+	/** Adds an extension's notification to the running turn; other notifications are only logged. */
 	#notify(message: string, level: NotifyLevel): void {
 		const turn = this.#turn;
-		if (this.#hostRun && turn && !turn.cancelledByClient) {
+		if (turn && !turn.cancelledByClient) {
 			turn.mapper.notice(noticeMarkdown(message, level));
 			return;
 		}
@@ -1245,6 +1249,7 @@ export class PiSession {
 	#finishExternalTurn(turn: ActiveTurn, outcome: TurnOutcome): void {
 		this.#hasTurns = true;
 		this.#touch();
+		this.#closeDialogs();
 		if (!turn.cancelledByClient) {
 			turn.mapper.finish(outcome, Date.now() - turn.startedAt);
 			if (outcome.kind === "error" && outcome.resumable) this.#resumableTurn = turn.id;

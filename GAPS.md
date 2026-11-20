@@ -119,7 +119,7 @@ See [specs/forks.md](specs/forks.md).
 
 See [specs/extension-dialogs.md](specs/extension-dialogs.md).
 
-- **rpc host turns only:** embedded sessions and pi terminal sessions do not forward dialogs, and a dialog an extension opens outside a turn (for example at startup or from a timer) is dismissed.
+- **rpc only:** embedded sessions and pi terminal sessions do not forward dialogs, and a dialog an extension opens outside a turn (for example at startup or from a timer) is dismissed. Runs pi starts on its own (such as `/plan <prompt>`'s planning run) do show them.
 - **No status line or widgets:** `setStatus`, `setWidget`, `setTitle` and `set_editor_text` are ignored. An extension's footer status, such as a plan's progress, is not shown.
 - **Notifications outside a turn** are logged only, and ones pi sends while it starts (such as an extension's greeting) are dropped. One an extension sends just after its turn was cancelled can appear in the next turn.
 - **No multi-line editor:** `editor` dialogs are a text question with the prefill as its default value. VS Code may show it as a single-line field.
