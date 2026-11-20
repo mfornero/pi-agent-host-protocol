@@ -65,6 +65,14 @@ export class FakePi {
 	 * input hook resends input that arrives during a foreground command.
 	 */
 	steerAsFollowUp = false;
+	/**
+	 * How pi answers `compact`: a result, or an error message. Unset leaves the
+	 * command unanswered until the test calls `finishCompact` (or pi is aborted).
+	 */
+	compactWith: { result: unknown } | { error: string } | undefined = {
+		result: { tokensBefore: 12_000, estimatedTokensAfter: 3_000 },
+	};
+	#pendingCompact: RpcRecord | undefined;
 
 	constructor(channel: RpcChannel) {
 		this.channel = channel;
@@ -87,6 +95,14 @@ export class FakePi {
 			}
 			this.channel.send(event);
 		}
+	}
+
+	/** Answers a `compact` the test held back (`compactWith` unset). */
+	finishCompact(answer: { result: unknown } | { error: string }): void {
+		const command = this.#pendingCompact;
+		this.#pendingCompact = undefined;
+		if (!command) throw new Error("no compact is pending");
+		this.channel.respond(command, "error" in answer ? { error: answer.error } : { data: answer.result });
 	}
 
 	#queueUpdate(): void {
@@ -121,6 +137,21 @@ export class FakePi {
 				this.channel.respond(command, { data });
 				break;
 			}
+			case "compact":
+				if (this.compactWith === undefined) {
+					this.#pendingCompact = command;
+					break;
+				}
+				this.channel.respond(
+					command,
+					"error" in this.compactWith ? { error: this.compactWith.error } : { data: this.compactWith.result },
+				);
+				break;
+			case "abort":
+				// pi's abort cancels a manual compaction, which then fails.
+				if (this.#pendingCompact) this.finishCompact({ error: "Compaction cancelled" });
+				this.channel.respond(command, {});
+				break;
 			case "extension_ui_response":
 				break;
 			default:
