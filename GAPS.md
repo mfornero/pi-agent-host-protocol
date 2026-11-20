@@ -44,6 +44,7 @@ See [specs/archived-sessions.md](specs/archived-sessions.md).
   - Nothing is reported for embedded sessions or pi terminals: their children are the host's or the terminal's own.
   - Each refresh runs `ps` once per running pi, every 5 s and at each turn start and end.
 - **Model list cache (rpc):** models are cached for 30 s, so a provider added in pi shows up after that.
+- **No models after a slow first start (rpc):** with `--pi` pointing at a source build of Bolt, whose first start transpiles its plugins, VS Code showed "No models available" until the host was restarted, and the host logged no warning. The cause isn't confirmed. The host does not warn or retry when pi lists no models.
 - **Session title of a running rpc session** is read from the session file only when the session is loaded. A rename made inside pi (for example by an extension) is not reflected until the host reloads the session.
 - **Agent directory not detected (rpc):** the host does not ask the `pi` executable which agent directory it uses. If the installed `pi` defaults to a different directory than `~/.pi/agent` (for example a build with `userConfigDir: ".av-pi"`), pass `--agent-dir`, or saved sessions vanish from the list after a restart.
 - **Version skew (rpc):** the host is tested against the pi bundled in `node_modules`. An installed `pi` with a different RPC protocol version is not detected.
