@@ -50,7 +50,7 @@ import {
 	type PiUiHandler,
 } from "./dialogs.ts";
 import { forkKeep, forkLeaf, forkTurnError } from "./forks.ts";
-import { turnsFromEntries, userMessageText } from "./history.ts";
+import { CONTINUED, turnsFromEntries, userMessageText } from "./history.ts";
 import { type IdleState, suspendBlocker } from "./idle.ts";
 import { parseModelSelection, thinkingLevelOf } from "./models.ts";
 import type { BackgroundProcess } from "./processes.ts";
@@ -116,9 +116,6 @@ const RUN_STARTED: Record<RunKind["kind"], string> = {
 	steering: "turn started for queued steering",
 	compact: "compaction started",
 };
-
-/** Text of a turn that pi started without a user message (for example, an extension continuing a run). */
-const CONTINUED = "Continued in pi";
 
 const TITLE_LENGTH = 80;
 const UNTITLED = "New session";

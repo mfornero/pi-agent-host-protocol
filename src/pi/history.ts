@@ -53,6 +53,26 @@ interface TurnBuilder {
 	/** Index into `responseParts` of each tool call awaiting its result. */
 	pendingTools: Map<string, number>;
 	errorMessage?: string;
+	/** The last assistant message ended the run (stopped for anything but a tool call). */
+	runEnded: boolean;
+	/** A custom message arrived after the run ended: the next assistant message starts a turn. */
+	continuationId?: string;
+}
+
+/** Text of a turn that pi started without a user message (for example, an extension continuing a run). */
+export const CONTINUED = "Continued in pi";
+
+/** The hidden message `/ahp-resume` sends: it continues the errored turn rather than starting one. */
+const RESUME_MARKER = "ahp-resume";
+
+function newTurn(id: string, timestamp: string, message: Turn["message"]): TurnBuilder {
+	return {
+		turn: { id, startedAt: timestamp, message, responseParts: [], usage: undefined, state: TurnState.Complete },
+		endedAt: Date.parse(timestamp),
+		usage: undefined,
+		pendingTools: new Map(),
+		runEnded: false,
+	};
 }
 
 /**
@@ -90,25 +110,28 @@ export function turnsFromEntries(entries: readonly SessionEntry[], extraContent?
 	};
 
 	for (const entry of entries) {
+		if (entry.type === "custom_message") {
+			// pi sends these to wake the agent (a subagent's completion, for one);
+			// one that starts a run after the last one ended is a turn of its own,
+			// as it is live ("Continued in pi").
+			if (current?.runEnded && entry.customType !== RESUME_MARKER) current.continuationId ??= entry.id;
+			continue;
+		}
 		if (entry.type !== "message") continue;
 		const message = entry.message as unknown as PiMessage;
 		const at = Date.parse(entry.timestamp);
 		if (message.role === "user") {
 			close();
-			current = {
-				turn: {
-					id: entry.id,
-					startedAt: entry.timestamp,
-					message: { text: userMessageText(message.content), origin: { kind: MessageKind.User } },
-					responseParts: [],
-					usage: undefined,
-					state: TurnState.Complete,
-				},
-				endedAt: at,
-				usage: undefined,
-				pendingTools: new Map(),
-			};
+			current = newTurn(entry.id, entry.timestamp, {
+				text: userMessageText(message.content),
+				origin: { kind: MessageKind.User },
+			});
 			continue;
+		}
+		if (message.role === "assistant" && current?.continuationId) {
+			const id = current.continuationId;
+			close();
+			current = newTurn(id, entry.timestamp, { text: CONTINUED, origin: { kind: MessageKind.SystemNotification } });
 		}
 		if (!current) continue;
 		if (Number.isFinite(at)) current.endedAt = at;
@@ -152,6 +175,7 @@ function appendAssistant(builder: TurnBuilder, entryId: string, message: PiMessa
 		}
 	});
 	builder.usage = addCall(builder.usage, message.usage, message.model);
+	builder.runEnded = message.stopReason !== "toolUse";
 	if (message.stopReason === "aborted") {
 		builder.turn.state = TurnState.Cancelled;
 	} else if (message.stopReason === "error") {

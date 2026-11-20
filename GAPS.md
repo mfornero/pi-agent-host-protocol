@@ -14,7 +14,7 @@ Known issues and features not yet implemented.
 - **Chats other than forks:** side chats, empty new chats (`createChat` without a source), `moveChat` and `disposeChat` are unsupported. See [Forked chats](#forked-chats).
 - **`disposeSession`** only discards empty sessions, and pi session files are never deleted (see the README).
 - **No paging:** `fetchTurns` does not page, so history is sent in full.
-- **History gaps:** compaction summaries, custom messages and bash executions are not shown in reloaded history.
+- **History gaps:** compaction summaries, the text of custom messages and bash executions are not shown in reloaded history. A custom message that woke the agent after a run starts a "Continued in pi" turn, as it does live.
 - **pi extension dialogs** resolve with their defaults in embedded mode. See [Extension dialogs](#extension-dialogs) for rpc mode.
 - **File edits** are shown as text results, not file diffs.
 - **Not implemented:** changesets, MCP and automations. Annotations hold VS Code's review comments only; see [Review comments](#review-comments-annotations).
