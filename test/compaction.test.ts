@@ -43,7 +43,10 @@ describe("compaction helpers", () => {
 		const items = slashCompletions(withCompactCommand([]), "/comp", 5);
 		assert.equal(items.length, 1);
 		assert.equal(items[0]?.insertText, "/compact ");
-		assert.equal((items[0]?.attachment?._meta as { description?: string }).description, COMPACT_DESCRIPTION);
+		assert.equal(
+			(items[0]?.attachment?._meta as { description?: string } | undefined)?.description,
+			COMPACT_DESCRIPTION,
+		);
 		const own = [{ name: "compact", kind: "extension" as const, description: "pi's own" }];
 		assert.equal(withCompactCommand(own), own);
 	});

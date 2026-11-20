@@ -4,11 +4,11 @@ import {
 	ResponsePartKind,
 	ToolCallConfirmationReason,
 	type ToolResultContent,
-	type UsageInfo,
 } from "@microsoft/agent-host-protocol";
 import type { PiEvent } from "./agent.ts";
 import { ACTIVITY_COMPACTING } from "./compaction.ts";
 import { firstText, toolActivity, toolInputText, toolLabels, toolResultContent } from "./tool-display.ts";
+import { addCall, type PiUsage, type TurnUsage, usageInfo } from "./usage.ts";
 
 /**
  * How a run ended. A `resumable` error came from the model provider (the run
@@ -33,7 +33,7 @@ interface AssistantLike {
 	stopReason?: string;
 	errorMessage?: string;
 	model?: string;
-	usage?: { input?: number; output?: number; cacheRead?: number };
+	usage?: PiUsage;
 	content?: Array<{ type: string; id?: string; name?: string }>;
 }
 
@@ -72,7 +72,7 @@ export class TurnMapper {
 	readonly #startedTools = new Set<string>();
 	readonly #readyTools = new Set<string>();
 	readonly #toolArgs = new Map<string, Record<string, unknown> | undefined>();
-	readonly #usage = { input: 0, output: 0, cacheRead: 0, seen: false, model: undefined as string | undefined };
+	#usage: TurnUsage | undefined;
 	#lastError: string | undefined;
 	#aborted = false;
 	#notices = 0;
@@ -166,14 +166,8 @@ export class TurnMapper {
 	/** Emits the actions that end the turn. */
 	finish(outcome: TurnOutcome, durationMs: number): void {
 		this.#setActivity(undefined);
-		if (this.#usage.seen) {
-			const usage: UsageInfo = {
-				inputTokens: this.#usage.input,
-				outputTokens: this.#usage.output,
-				...(this.#usage.cacheRead ? { cacheReadTokens: this.#usage.cacheRead } : {}),
-				...(this.#usage.model ? { model: this.#usage.model } : {}),
-			};
-			this.#emit({ type: ActionType.ChatUsage, turnId: this.turnId, usage });
+		if (this.#usage) {
+			this.#emit({ type: ActionType.ChatUsage, turnId: this.turnId, usage: usageInfo(this.#usage) });
 		}
 		const duration = Math.max(0, Math.round(durationMs));
 		switch (outcome.kind) {
@@ -285,13 +279,7 @@ export class TurnMapper {
 	#onMessageEnd(message: unknown): void {
 		const assistant = asAssistant(message);
 		if (!assistant) return;
-		if (assistant.usage) {
-			this.#usage.seen = true;
-			this.#usage.input += assistant.usage.input ?? 0;
-			this.#usage.output += assistant.usage.output ?? 0;
-			this.#usage.cacheRead += assistant.usage.cacheRead ?? 0;
-		}
-		if (assistant.model) this.#usage.model = assistant.model;
+		this.#usage = addCall(this.#usage, assistant.usage, assistant.model);
 		if (assistant.stopReason === "aborted") {
 			this.#aborted = true;
 		} else if (assistant.stopReason === "error") {
