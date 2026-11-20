@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import type { SessionEntry, SessionManager, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import {
+	type ActionOrigin,
 	ActionType,
 	type ChatAction,
 	type ChatInputAnswer,
@@ -365,6 +366,11 @@ export class PiSession {
 	/** True if `chatId` is one of the read-only subagent chats this chat started. */
 	ownsSubagentChat(chatId: string): boolean {
 		return this.#subagents.owns(chatId);
+	}
+
+	/** Applies a client's action on one of this chat's subagent chats, or says why not. */
+	subagentChatAction(chatId: string, action: StateAction, origin: ActionOrigin): string | undefined {
+		return this.#subagents.clientAction(chatId, action, origin);
 	}
 
 	get hasTurns(): boolean {

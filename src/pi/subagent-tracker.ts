@@ -1,6 +1,7 @@
 import { type FSWatcher, watch } from "node:fs";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
+	type ActionOrigin,
 	ActionType,
 	type BackgroundSubagentWork,
 	type ChatAction,
@@ -9,6 +10,7 @@ import {
 	type ChatState,
 	type ChatSummary,
 	SessionStatus,
+	type StateAction,
 	type ToolResultContent,
 } from "@microsoft/agent-host-protocol";
 import type { Logger } from "../core/logger.ts";
@@ -35,6 +37,9 @@ import {
 	type TranscriptProgress,
 	transcriptActions,
 } from "./subagents.ts";
+
+/** Why a client action on a subagent chat was refused. */
+export const SUBAGENT_CHAT_READ_ONLY = "Subagent chats are read-only";
 
 /** How often status and session files are re-read when `fs.watch` gives no events (or misses some). */
 export const SUBAGENT_POLL_MS = 2_000;
@@ -100,6 +105,39 @@ export class SubagentTracker {
 	owns(chatId: string): boolean {
 		for (const run of this.#runs.values()) if (run.children.has(chatId)) return true;
 		return false;
+	}
+
+	/**
+	 * Applies what a client may change on a subagent chat it can't type into:
+	 * whether it has been read and the input's draft. Anything else is
+	 * refused; `undefined` means the action was applied.
+	 */
+	clientAction(chatId: string, action: StateAction, origin: ActionOrigin | undefined): string | undefined {
+		if (action.type !== ActionType.ChatIsReadChanged && action.type !== ActionType.ChatDraftChanged) {
+			return SUBAGENT_CHAT_READ_ONLY;
+		}
+		const tracked = this.#tracked(chatId);
+		if (!tracked?.published) return SUBAGENT_CHAT_READ_ONLY;
+		const { store } = this.#host;
+		if (!store.dispatch(tracked.chat, action, origin) || action.type !== ActionType.ChatIsReadChanged) return undefined;
+		const chat = store.chat(chatId);
+		if (chat) {
+			store.dispatch(store.sessionResource(this.#host.sessionId), {
+				type: ActionType.SessionChatUpdated,
+				chat: tracked.chat,
+				changes: { status: chat.status },
+			});
+			this.#host.catalogChanged();
+		}
+		return undefined;
+	}
+
+	#tracked(chatId: string): TrackedChild | undefined {
+		for (const run of this.#runs.values()) {
+			const tracked = run.children.get(chatId);
+			if (tracked) return tracked;
+		}
+		return undefined;
 	}
 
 	/** Chat ids of every subagent chat. */

@@ -58,6 +58,7 @@ import {
 } from "../pi/pi-session.ts";
 import { connectRpcAgent } from "../pi/rpc-agent.ts";
 import type { RpcChannel } from "../pi/rpc-channel.ts";
+import { SUBAGENT_CHAT_READ_ONLY } from "../pi/subagent-tracker.ts";
 import { subagentChatSession } from "../pi/subagents.ts";
 import { ProtocolError } from "../protocol/jsonrpc.ts";
 import { selectProtocolVersion } from "../protocol/version.ts";
@@ -876,7 +877,7 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			}
 			const chatId = ref.chatId;
 			if (this.#chats().some((chat) => chat.ownsSubagentChat(chatId))) {
-				return { kind: "rejected", reason: "Subagent chats are read-only" };
+				return { kind: "rejected", reason: SUBAGENT_CHAT_READ_ONLY };
 			}
 			ref = { kind: "session", sessionId: ref.sessionId };
 		}
@@ -896,9 +897,12 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			case "chat": {
 				const session = this.#chat(ref);
 				if (!session) {
-					// Subagent chats show what a subagent does; nobody can type into them.
-					const owner = this.#chats().some((chat) => chat.ownsSubagentChat(ref.chatId));
-					return owner ? { kind: "rejected", reason: "Subagent chats are read-only" } : { kind: "ignored" };
+					// Subagent chats show what a subagent does; nobody can type into them,
+					// but a client can mark one read and keep a draft in its input.
+					const owner = this.#chats().find((chat) => chat.ownsSubagentChat(ref.chatId));
+					if (!owner) return { kind: "ignored" };
+					const reason = owner.subagentChatAction(ref.chatId, action, origin);
+					return reason ? { kind: "rejected", reason } : { kind: "accepted" };
 				}
 				const reason = session.validateChatAction(action);
 				if (reason) return { kind: "rejected", reason };

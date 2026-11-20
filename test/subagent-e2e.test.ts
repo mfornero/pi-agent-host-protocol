@@ -154,6 +154,19 @@ describe("subagent chats (rpc)", () => {
 		);
 		assert.equal(rejection.params.rejectionReason, "Subagent chats are read-only");
 
+		// Marking it read and keeping a draft in its input are accepted.
+		const draft = { text: "later", origin: { kind: "user" } };
+		for (const action of [
+			{ type: "chat/isReadChanged", isRead: false },
+			{ type: "chat/draftChanged", draft },
+		]) {
+			const seq = client.dispatch(firstChat, action);
+			const echoed = await client.waitFor((m) => m.method === "action" && m.params.origin?.clientSeq === seq);
+			assert.equal(echoed.params.rejectionReason, undefined, action.type);
+		}
+		await waitUntil(() => ((catalog()[0]?.status ?? 0) & SessionStatus.IsRead) === 0, TIMEOUT);
+		assert.deepEqual(client.chats.get(firstChat)?.draft, draft);
+
 		// Status flips: the first finishes, the second fails; the run ends and the work is gone.
 		writeStatus(asyncDir, "complete", [
 			{ ...first, status: "completed" },
