@@ -50,7 +50,9 @@ See [specs/archived-sessions.md](specs/archived-sessions.md).
 
 ## Steering and queued messages
 
-- **A steer that pi receives as its run settles can be lost or delayed.** If the host sends `steer` just after pi's loop last checked its steering queue, pi stores the message but doesn't start a run for it. The message then runs with the next prompt, or never runs. The host can't tell, because the steering message has already left the pending state. Fixing this needs pi to report its queue (for example `queue_update`), or the host to send `steer` only while pi is still streaming.
+- **A steer waits behind a long tool call.** pi delivers a steering message once the current reply's tool calls finish, as VS Code's "Steer with Message" describes, so a tool that blocks (such as pi-subagents' `bg_wait`) holds it until the tool returns. Bolt's `bash` returns early on new input; other blocking tools need to do the same. Use "Stop and Send" to interrupt.
+- **Extension messages dropped with a cleared queue:** pi's `clear_queue` also drops messages extensions queued during the run (a background subagent's result, Bolt's job notices) and returns only the user's. The host clears pi's queue after a client cancel (as pi's Esc does) and when Bolt's `bash` resent a steer as a follow-up; a subagent result queued in that turn is then lost. pi would need a call that clears only the user's messages.
+- **No notice for a dropped steer:** after a client cancel, the turn has already ended, so a steer the host drops gets no notice in the chat, only an info log line.
 - **Messages can't be held while the session is idle.** The host starts a queued message straight away when no turn is running. AHP has no "paused" queue state.
 - **Not checked against VS Code:** "send immediately" on a queued message was read from VS Code's documentation, and its exact action sequence hasn't been observed.
 

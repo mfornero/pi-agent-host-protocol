@@ -25,6 +25,7 @@ PI_AGENT_HOST_PROTOCOL_LOG_LEVEL=debug pi-agent-host-protocol
 **`info`** (default): connection lifecycle.
 
 - `pi backend`: at startup, the pi mode in use (`rpc` or `embedded`), and in `rpc` mode `idle timeout` (minutes).
+- `undelivered steering messages resumed`: a run ended with steering messages pi still holds, so a new turn opens and a run starts in which pi delivers them (`messages`). `undelivered steering messages queued`: the same when pi holds them as follow-ups (Bolt's `bash`) or not at all; they run as the next turns from the chat's queue. `undelivered steering messages dropped`: the same after a cancel, so they don't run. See [specs/steering.md](../specs/steering.md).
 - `idle session suspended`: the host stopped an idle session's `pi` process (`session`, `idleMinutes`). See [specs/idle-sessions.md](../specs/idle-sessions.md).
 - `live session attached` / `live session detached`: an interactive pi shared or let go of a session (`pid`, `session`, and for detaches the reason).
 - `client connected`: a WebSocket connection was accepted.
@@ -44,7 +45,7 @@ PI_AGENT_HOST_PROTOCOL_LOG_LEVEL=debug pi-agent-host-protocol
 - `action accepted` / `action rejected` / `action ignored`: each action a client dispatches, such as `chat/turnStarted` or `chat/turnCancelled`. Rejections include the reason.
 - `session created`, `session loaded` (opened from a pi session file), `session ready`, `session disposed`
 - `turn started outside the host` (a run typed in a pi terminal), `live session ready`
-- `turn started` (model, prompt length, attachment count), `turn resumed` (a `chat/turnResume` after a resumable error), and `turn finished` (outcome `complete`, `cancelled` or `error`, plus duration)
+- `turn started` (model, prompt length, attachment count), `turn resumed` (a `chat/turnResume` after a resumable error), `turn started for queued steering` (a run in which pi delivers steering messages it still held), and `turn finished` (outcome `complete`, `cancelled` or `error`, plus duration)
 - `tool started` / `tool finished`, `model retry`, `turn cancelled by client`, `steering message sent`, `steering message started a turn` (also logged when a steering message arrives with no turn running), `queued message started a turn`
 - `terminal created` (shell, cwd, pid), `terminal exited` (exit code), `terminal disposed`
 - `resource watch created` (root, recursive) and `resource watch released`. Watcher failures are logged as `resource watch error` at warn.

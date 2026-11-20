@@ -26,7 +26,7 @@ import type { StateStore } from "../core/state-store.ts";
 import { fileUri, PROVIDER, pathFromFileUri } from "../core/uris.ts";
 import type { AnnotationStore } from "../host/annotation-store.ts";
 import type { ArchiveStore } from "../host/archive-store.ts";
-import type { ImageInput, PiAgent, PiBackend, PiEvent, PromptInput } from "./agent.ts";
+import type { ImageInput, PiAgent, PiBackend, PiEvent, PiQueue, PromptInput } from "./agent.ts";
 import { ACT_ON_FEEDBACK_PROMPT, isActOnFeedback, referencedComments } from "./annotations.ts";
 import { backgroundWorkActions, backgroundWorkMeta } from "./background-work.ts";
 import {
@@ -95,8 +95,18 @@ interface OpenDialog {
 	readonly timer: ReturnType<typeof setTimeout> | undefined;
 }
 
-/** What a run does: send a new user message, or continue a turn that ended in a resumable error. */
-type RunKind = { kind: "prompt"; message: Message } | { kind: "resume" };
+/**
+ * What a run does: send a new user message, continue a turn that ended in a
+ * resumable error, or start a run in which pi delivers the steering messages
+ * still in its queue (the first opens the turn).
+ */
+type RunKind = { kind: "prompt"; message: Message } | { kind: "resume" } | { kind: "steering" };
+
+const RUN_STARTED: Record<RunKind["kind"], string> = {
+	prompt: "turn started",
+	resume: "turn resumed",
+	steering: "turn started for queued steering",
+};
 
 /** Text of a turn that pi started without a user message (for example, an extension continuing a run). */
 const CONTINUED = "Continued in pi";
@@ -145,6 +155,8 @@ export class PiSession {
 	 * Each becomes its own turn when pi echoes it (see `#promoteSteering`).
 	 */
 	#steered: Message[] = [];
+	/** The user messages in pi's queues, from its latest `queue_update`. */
+	#piQueue: PiQueue = { steering: [], followUp: [] };
 	/** Agents whose events are observed for runs started outside the host. */
 	readonly #observed = new WeakSet<PiAgent>();
 	/** The turn whose last run ended in a resumable provider error, if any. */
@@ -749,8 +761,9 @@ export class PiSession {
 		let turn = first;
 		let outcome: TurnOutcome = { kind: "cancelled" };
 		let unsubscribe: (() => void) | undefined;
-		// The first user message of a prompt run is the prompt itself; later ones were steered in.
-		let promptSeen = run.kind !== "prompt";
+		// The first user message of a prompt run is the prompt itself (of a steering run, the
+		// queued steer that opened the turn); later ones were steered in.
+		let promptSeen = run.kind === "resume";
 		let comments: readonly string[] = [];
 		try {
 			if (!turn.cancelledByClient) {
@@ -771,7 +784,7 @@ export class PiSession {
 					this.#logEvent(turn, event);
 					turn.mapper.handle(event);
 				});
-				this.#ctx.logger.debug(run.kind === "prompt" ? "turn started" : "turn resumed", {
+				this.#ctx.logger.debug(RUN_STARTED[run.kind], {
 					session: this.id,
 					turn: turn.id,
 					model: agent.model ? `${agent.model.provider}/${agent.model.id}` : undefined,
@@ -784,6 +797,7 @@ export class PiSession {
 					comments = prompt.comments;
 					await agent.prompt(prompt.input);
 				} else {
+					// Any run delivers pi's queued steering first; resuming starts one without a new message.
 					await agent.resume();
 				}
 				outcome = turn.mapper.impliedOutcome();
@@ -794,9 +808,9 @@ export class PiSession {
 				: { kind: "error", message: error instanceof Error ? error.message : String(error) };
 		} finally {
 			this.#hostRun = false;
-			this.#steered = [];
 			unsubscribe?.();
 		}
+		const undelivered = this.#steered.splice(0);
 		if (!promptSeen) this.#unrecorded.add(first.id);
 		this.#hasTurns = true;
 		this.#closeDialogs();
@@ -814,9 +828,65 @@ export class PiSession {
 			this.#turn = undefined;
 			this.#ctx.activityChanged();
 		}
+		if (undelivered.length > 0) await this.#settleUndelivered(turn, undelivered);
 		this.#touch();
 		this.#syncSummary();
 		this.#consumePending();
+	}
+
+	/**
+	 * Steering messages a host run ended without pi delivering them: pi's loop
+	 * had already made its last check when they arrived, or the run was
+	 * aborted. pi's `abort` leaves them queued.
+	 * - After a client cancel, pi's queue is cleared so they don't surface in
+	 *   the next run, as pi's own Esc does, and they are dropped.
+	 * - If pi still holds them as steers, a new turn opens with the first, and
+	 *   a run starts in which pi delivers them along with anything extensions
+	 *   queued meanwhile (pi's queue is not cleared, since `clear_queue` would
+	 *   drop those, such as a background subagent's result).
+	 * - If pi holds them as follow-ups (Bolt's `bash` backgrounds a running
+	 *   command on new input and resends it that way), a run would answer
+	 *   before delivering them, so the queue is cleared and they go to the
+	 *   front of the chat's queue instead.
+	 * An agent that cannot clear pi's queue (a pi terminal) keeps them there, as pi would.
+	 */
+	async #settleUndelivered(turn: ActiveTurn, messages: readonly Message[]): Promise<void> {
+		const agent = await this.#agent?.catch(() => undefined);
+		if (!agent?.clearQueue) return;
+		if (turn.cancelledByClient) {
+			await agent.clearQueue().catch(() => undefined);
+			this.#ctx.logger.info("undelivered steering messages dropped", { session: this.id, messages: messages.length });
+			return;
+		}
+		if (this.#piQueue.steering.length > 0) {
+			const [first, ...rest] = messages;
+			this.#steered = rest;
+			const turnId = crypto.randomUUID();
+			this.#dispatchChat({
+				type: ActionType.ChatTurnStarted,
+				turnId,
+				startedAt: new Date().toISOString(),
+				message: first!,
+			});
+			this.#ctx.logger.info("undelivered steering messages resumed", { session: this.id, messages: messages.length });
+			this.#runTurn(turnId, { kind: "steering" });
+			return;
+		}
+		if (this.#piQueue.followUp.length > 0) await agent.clearQueue().catch(() => undefined);
+		const ids = messages.map(() => `steer-${crypto.randomUUID()}`);
+		messages.forEach((message, index) => {
+			this.#dispatchChat({
+				type: ActionType.ChatPendingMessageSet,
+				kind: PendingMessageKind.Queued,
+				id: ids[index]!,
+				message,
+			});
+		});
+		const others = (this.#ctx.store.chat(this.id)?.queuedMessages ?? [])
+			.map((queued) => queued.id)
+			.filter((id) => !ids.includes(id));
+		this.#dispatchChat({ type: ActionType.ChatQueuedMessagesReordered, order: [...ids, ...others] });
+		this.#ctx.logger.info("undelivered steering messages queued", { session: this.id, messages: messages.length });
 	}
 
 	/**
@@ -951,7 +1021,10 @@ export class PiSession {
 	#observe(agent: PiAgent): PiAgent {
 		if (!this.#observed.has(agent)) {
 			this.#observed.add(agent);
-			agent.subscribe((event) => this.#onAgentEvent(event));
+			agent.subscribe((event) => {
+				if (event.type === "queue_update") this.#piQueue = { steering: event.steering, followUp: event.followUp };
+				this.#onAgentEvent(event);
+			});
 			this.#loadCommands(agent.commands());
 		}
 		return agent;

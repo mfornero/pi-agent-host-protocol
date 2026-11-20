@@ -404,6 +404,15 @@ export function startTurn(client: TestClient, chat: string, text: string): strin
 	return turnId;
 }
 
+/** Polls `predicate` until it holds, or throws after `timeoutMs`. */
+export async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!predicate()) {
+		if (Date.now() > deadline) throw new Error("Timed out");
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+
 /** Two connected in-memory channels, standing in for a socket between the host and a bridge. */
 export function channelPair(): [JsonlChannel, JsonlChannel] {
 	let a: JsonlChannel;
