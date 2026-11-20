@@ -118,9 +118,16 @@ export function taskLabel(task: string | undefined): string | undefined {
 	return line.length > TITLE_LABEL_LENGTH ? `${line.slice(0, TITLE_LABEL_LENGTH - 1)}…` : line;
 }
 
-/** The chat title of a child: `<label> (<agent>)`, or the agent alone when the label is the agent. */
-export function subagentTitle(child: Pick<SubagentChild, "label" | "agent">): string {
-	return child.label === child.agent ? child.agent : `${child.label} (${child.agent})`;
+/** Title suffixes for a child that did not complete; VS Code lists a failed chat with the completed ones. */
+const OUTCOME_SUFFIX: Partial<Record<SubagentStatus, string>> = { failed: " · failed", stopped: " · stopped" };
+
+/**
+ * The chat title of a child: `<label> (<agent>)`, or the agent alone when
+ * the label is the agent, then ` · failed` or ` · stopped` once it ended so.
+ */
+export function subagentTitle(child: Pick<SubagentChild, "label" | "agent"> & { status?: SubagentStatus }): string {
+	const name = child.label === child.agent ? child.agent : `${child.label} (${child.agent})`;
+	return `${name}${(child.status && OUTCOME_SUFFIX[child.status]) ?? ""}`;
 }
 
 /**

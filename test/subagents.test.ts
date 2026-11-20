@@ -215,6 +215,10 @@ describe("chats", () => {
 	test("titles are '<label> (<agent>)'", () => {
 		assert.equal(subagentTitle({ label: "task-1", agent: "delegate" }), "task-1 (delegate)");
 		assert.equal(subagentTitle({ label: "delegate", agent: "delegate" }), "delegate");
+		assert.equal(subagentTitle({ label: "task-1", agent: "delegate", status: "running" }), "task-1 (delegate)");
+		assert.equal(subagentTitle({ label: "task-1", agent: "delegate", status: "complete" }), "task-1 (delegate)");
+		assert.equal(subagentTitle({ label: "task-1", agent: "delegate", status: "failed" }), "task-1 (delegate) · failed");
+		assert.equal(subagentTitle({ label: "scout", agent: "scout", status: "stopped" }), "scout · stopped");
 	});
 
 	test("the parent's tool call links one subagent content per child", () => {

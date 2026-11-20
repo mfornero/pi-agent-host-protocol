@@ -36,7 +36,7 @@ The tracker subscribes to the agent before any turn mapper does, so by the time 
 ### The chats
 
 - **Id and URI:** `subagent-<run id>-<child key>`, stable across restarts, and the URI `ahp-chat://<id>/<base64url(session URI)>` (the shape VS Code gives chats of a session), so a subagent chat's URI names its session. Subscribing to one after a restart loads its session, which rebuilds it.
-- **Title:** `<label> (<agent>)`: the workflow key (`task-1 (delegate)`), or for a single subagent the start of its task.
+- **Title:** `<label> (<agent>)`: the workflow key (`task-1 (delegate)`), or for a single subagent the start of its task. A child that failed or was stopped gets ` · failed` or ` · stopped` (renamed with `session/chatUpdated` when its status changes): VS Code's Subagents list puts errored chats under "Completed", with nothing else to tell a failed child from one that finished, and a parent that relaunched its subagents lists both sets under the same names.
 - **Catalog entry:** `origin: { kind: "tool", chat: <parent chat>, toolCallId }`, `interactivity: "read-only"`, added with `session/chatAdded`; status and `modifiedAt` follow the chat with `session/chatUpdated`, and the root summary's catalog is refreshed. They are registered in the state store like forked chats (`StateStore.addForkedChat`), but have no `PiSession` behind them.
 - **Read-only:** `chat/turnStarted` and every other client action on a subagent chat, and renaming one, are rejected with "Subagent chats are read-only". Two are accepted, because VS Code sends them for any chat it shows and they change nothing pi sees: `chat/isReadChanged` (the catalog entry's `IsRead` bit follows) and `chat/draftChanged`.
 

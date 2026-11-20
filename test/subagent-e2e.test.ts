@@ -177,7 +177,8 @@ describe("subagent chats (rpc)", () => {
 			() => !client.chats.get(chat)!.backgroundWork?.some((work) => work.kind === BackgroundWorkKind.Subagent),
 			TIMEOUT,
 		);
-		const secondEntry = () => catalog().find((entry) => entry.title === "task-2 (scout)");
+		// The failed child says so in its title (VS Code lists it with the completed ones).
+		const secondEntry = () => catalog().find((entry) => entry.title === "task-2 (scout) · failed");
 		await waitUntil(() => ((secondEntry()?.status ?? 0) & SessionStatus.Error) === SessionStatus.Error, TIMEOUT);
 
 		// After a restart the chats come back from the status file, linked again.
