@@ -39,7 +39,7 @@ See [specs/archived-sessions.md](specs/archived-sessions.md).
   - Embedded mode keeps idle sessions in memory.
 - **Background work** (rpc): see [specs/background-work.md](specs/background-work.md).
   - Only pi's direct children are seen. A job pi's `bash` tool backgrounds with `&` (or `nohup`) is reparented when that shell exits and is not reported; jobs an extension keeps (such as `bash_bg`) are.
-  - Every process is a `shell` entry. Subagents are not told apart (no `subagent` entries with their own chat), and no entry has a `terminal` with its output.
+  - Every process other than pi-subagents' runners is a `shell` entry, and no entry has a `terminal` with its output. Subagents started by other tools (Bolt's `agent_bg`) are shells.
   - `startedAt` is when the host first saw the process, up to 5 s late, or when the turn that started it ended.
   - Nothing is reported for embedded sessions or pi terminals: their children are the host's or the terminal's own.
   - Each refresh runs `ps` once per running pi, every 5 s and at each turn start and end.
@@ -48,6 +48,17 @@ See [specs/archived-sessions.md](specs/archived-sessions.md).
 - **Session title of a running rpc session** is read from the session file only when the session is loaded. A rename made inside pi (for example by an extension) is not reflected until the host reloads the session.
 - **Agent directory not detected (rpc):** the host does not ask the `pi` executable which agent directory it uses. If the installed `pi` defaults to a different directory than `~/.pi/agent` (for example a build with `userConfigDir: ".av-pi"`), pass `--agent-dir`, or saved sessions vanish from the list after a restart.
 - **Version skew (rpc):** the host is tested against the pi bundled in `node_modules`. An installed `pi` with a different RPC protocol version is not detected.
+
+## Subagent chats
+
+See [specs/subagents.md](specs/subagents.md).
+
+- **Read-only:** a subagent can't be stopped or steered from its chat. pi-subagents has `/subagents-stop` and `/subagents-steer`, but AHP has no action for it on a worker chat; stop the parent's turn or use the commands in a pi terminal.
+- **Polled transcripts:** a child's session file is re-read every 2 s (and on `status.json` changes), not streamed token by token, so its chat updates in steps.
+- **Nested subagents:** a subagent's own `subagent` calls are shown in its transcript but get no chats of their own.
+- **0.73 after a cleaned `/tmp`:** pi-subagents 0.73 writes no child run ids into its completion notice and keeps children's session files under per-launch directories, so its runs can't be rebuilt without their `status.json`. 0.84 runs can.
+- **Forks:** a fork made after a `subagent` call repeats that call in its history, so once the fork is loaded it gets its own copies of those subagent chats (ids scoped to the fork), linked from its copy of the tool call.
+- **Not yet tried in a real VS Code window**, only against the test client, VS Code's source and a throwaway host running real Bolt subagents (0.73.1 and 0.84.0).
 
 ## Steering and queued messages
 

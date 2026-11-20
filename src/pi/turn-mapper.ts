@@ -3,6 +3,7 @@ import {
 	type ChatAction,
 	ResponsePartKind,
 	ToolCallConfirmationReason,
+	type ToolResultContent,
 	type UsageInfo,
 } from "@microsoft/agent-host-protocol";
 import type { PiEvent } from "./agent.ts";
@@ -18,6 +19,9 @@ export type TurnOutcome =
 	| { kind: "complete" }
 	| { kind: "cancelled" }
 	| { kind: "error"; message: string; resumable?: boolean };
+
+/** Content the host adds to a tool call's result, by tool call id (undefined for none). */
+export type ExtraToolContent = (toolCallId: string) => readonly ToolResultContent[] | undefined;
 
 /** Activity text while the model produces output that is not a tool call. */
 export const ACTIVITY_THINKING = "Thinking";
@@ -76,15 +80,19 @@ export class TurnMapper {
 	readonly #runningTools = new Map<string, string>();
 
 	readonly #attempt: number;
+	readonly #extraContent: ExtraToolContent | undefined;
 
 	/**
 	 * @param attempt Distinguishes the runs of one turn (0 for the first, then
 	 *   one per `chat/turnResume`) so their response part ids never collide.
+	 * @param extraContent Content the host adds to a completed tool call's
+	 *   result, such as links to the subagent chats a `subagent` call started.
 	 */
-	constructor(turnId: string, emit: (action: ChatAction) => void, attempt = 0) {
+	constructor(turnId: string, emit: (action: ChatAction) => void, attempt = 0, extraContent?: ExtraToolContent) {
 		this.#attempt = attempt;
 		this.turnId = turnId;
 		this.#emit = emit;
+		this.#extraContent = extraContent;
 	}
 
 	get aborted(): boolean {
@@ -124,7 +132,7 @@ export class TurnMapper {
 			case "tool_execution_end": {
 				this.#startTool(event.toolCallId, event.toolName);
 				this.#readyTool(event.toolCallId, event.toolName, undefined);
-				const content = toolResultContent(event.result);
+				const content = [...toolResultContent(event.result), ...(this.#extraContent?.(event.toolCallId) ?? [])];
 				const labels = toolLabels(event.toolName, this.#toolArgs.get(event.toolCallId));
 				this.#emit({
 					type: ActionType.ChatToolCallComplete,

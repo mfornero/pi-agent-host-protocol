@@ -7,11 +7,13 @@ import {
 	ToolCallConfirmationReason,
 	type ToolCallState,
 	ToolCallStatus,
+	type ToolResultContent,
 	type Turn,
 	TurnState,
 	type UsageInfo,
 } from "@microsoft/agent-host-protocol";
 import { firstText, toolInputText, toolLabels, toolResultContent } from "./tool-display.ts";
+import type { ExtraToolContent } from "./turn-mapper.ts";
 
 interface ContentBlock {
 	type: string;
@@ -56,9 +58,10 @@ interface TurnBuilder {
 /**
  * Reconstructs AHP turns from the active branch of a pi session. Each user
  * message starts a turn; assistant messages and tool results that follow it
- * become that turn's response parts.
+ * become that turn's response parts. `extraContent` adds the host's own
+ * content to a completed tool call (links to subagent chats).
  */
-export function turnsFromEntries(entries: readonly SessionEntry[]): Turn[] {
+export function turnsFromEntries(entries: readonly SessionEntry[], extraContent?: ExtraToolContent): Turn[] {
 	const turns: Turn[] = [];
 	let current: TurnBuilder | undefined;
 
@@ -115,7 +118,7 @@ export function turnsFromEntries(entries: readonly SessionEntry[]): Turn[] {
 			const index = current.pendingTools.get(message.toolCallId);
 			const part = index === undefined ? undefined : current.turn.responseParts[index];
 			if (part?.kind === ResponsePartKind.ToolCall && index !== undefined) {
-				part.toolCall = completed(part.toolCall, message);
+				part.toolCall = completed(part.toolCall, message, extraContent?.(message.toolCallId));
 				current.pendingTools.delete(message.toolCallId);
 			}
 		}
@@ -166,9 +169,13 @@ function appendAssistant(builder: TurnBuilder, entryId: string, message: PiMessa
 	}
 }
 
-function completed(toolCall: ToolCallState, message: PiMessage): ToolCallState {
+function completed(
+	toolCall: ToolCallState,
+	message: PiMessage,
+	extra: readonly ToolResultContent[] = [],
+): ToolCallState {
 	if (toolCall.status !== ToolCallStatus.Running) return toolCall;
-	const content = toolResultContent(message);
+	const content = [...toolResultContent(message), ...extra];
 	const labels = toolLabels(toolCall.toolName, parseArgs(toolCall.toolInput));
 	return {
 		...toolCall,

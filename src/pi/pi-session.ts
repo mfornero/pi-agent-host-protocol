@@ -53,6 +53,8 @@ import { turnsFromEntries, userMessageText } from "./history.ts";
 import { type IdleState, suspendBlocker } from "./idle.ts";
 import { parseModelSelection, thinkingLevelOf } from "./models.ts";
 import type { BackgroundProcess } from "./processes.ts";
+import { SubagentTracker } from "./subagent-tracker.ts";
+import { isSubagentRunner, subagentWorkActions } from "./subagents.ts";
 import { recordedUserTurns } from "./truncation.ts";
 import { TurnMapper, type TurnOutcome } from "./turn-mapper.ts";
 
@@ -181,6 +183,8 @@ export class PiSession {
 		notify: (message, level) => this.#notify(message, level),
 	};
 	#disposed = false;
+	/** The subagents this chat started, shown as read-only chats of its session (see specs/subagents.md). */
+	readonly #subagents: SubagentTracker;
 	#hasTurns: boolean;
 	/** When a client or pi last used the session, for stopping idle pi processes. */
 	#lastActivity: number;
@@ -201,6 +205,17 @@ export class PiSession {
 		this.#binding = binding;
 		this.#hasTurns = false;
 		this.#lastActivity = ctx.now();
+		this.#subagents = new SubagentTracker({
+			store: ctx.store,
+			logger: ctx.logger,
+			sessionId: this.sessionId,
+			...(binding.kind === "fork" ? { scope: id } : {}),
+			parentChat: this.chat,
+			sessionFile: () => this.#sessionManager.getSessionFile(),
+			catalogChanged: () => this.#syncCatalog(),
+			backgroundWorkChanged: () => this.#applySubagentWork(),
+			now: ctx.now,
+		});
 	}
 
 	/** Id of the AHP session the chat belongs to. */
@@ -258,6 +273,7 @@ export class PiSession {
 			binding,
 		);
 		session.#dispatchSession({ type: ActionType.SessionChatAdded, summary: session.#currentChatSummary() });
+		session.#subagents.publish();
 		session.#syncCatalog();
 		session.#loadCommands(ctx.backend.folderCommands(session.cwd));
 		return session;
@@ -317,7 +333,8 @@ export class PiSession {
 		const header = manager.getHeader();
 		const createdAt = header?.timestamp ?? new Date().toISOString();
 		const session = new PiSession(ctx, id, cwd, manager, createdAt, binding);
-		const turns = turnsFromEntries([...entries]);
+		session.#subagents.restore(entries);
+		const turns = turnsFromEntries([...entries], (toolCallId) => session.#subagents.linksFor(toolCallId));
 		const title = name ?? (turns[0] ? titleFrom(turns[0].message.text) : UNTITLED);
 		const lastTurn = turns.at(-1);
 		const modifiedAt =
@@ -337,7 +354,13 @@ export class PiSession {
 			{ ...session.#chatSummary(title, status, modifiedAt), turns },
 			ctx.annotations.annotationsOf(id),
 		);
+		session.#subagents.publish();
 		return session;
+	}
+
+	/** True if `chatId` is one of the read-only subagent chats this chat started. */
+	ownsSubagentChat(chatId: string): boolean {
+		return this.#subagents.owns(chatId);
 	}
 
 	get hasTurns(): boolean {
@@ -662,15 +685,37 @@ export class PiSession {
 		if (this.#agent === pending && !agent.closed) this.#applyBackgroundWork(processes);
 	}
 
+	/**
+	 * Publishes pi's background processes as shells. The processes
+	 * pi-subagents runs subagents in are left out: the subagents are listed as
+	 * `subagent` entries instead (see `#applySubagentWork`). They still keep
+	 * an idle pi from being stopped (`suspend` reads the processes itself).
+	 */
 	#applyBackgroundWork(processes: readonly BackgroundProcess[]): void {
 		const chat = this.#ctx.store.chat(this.id);
 		if (!chat) return;
 		const before = chat.backgroundWork?.length ?? 0;
-		const actions = backgroundWorkActions(chat.backgroundWork ?? [], {
-			processes,
-			running: this.idleState(undefined).running,
-			now: new Date(this.#ctx.now()).toISOString(),
-		});
+		const shells = processes.filter((process) => !isSubagentRunner(process.command));
+		const actions = [
+			...backgroundWorkActions(chat.backgroundWork ?? [], {
+				processes: shells,
+				running: this.idleState(undefined).running,
+				now: new Date(this.#ctx.now()).toISOString(),
+			}),
+			...subagentWorkActions(chat.backgroundWork ?? [], this.#subagents.runningWork()),
+		];
+		this.#publishBackgroundWork(before, actions);
+	}
+
+	/** Lists the subagents still running as the chat's `subagent` background work. */
+	#applySubagentWork(): void {
+		const chat = this.#ctx.store.chat(this.id);
+		if (!chat) return;
+		const before = chat.backgroundWork?.length ?? 0;
+		this.#publishBackgroundWork(before, subagentWorkActions(chat.backgroundWork ?? [], this.#subagents.runningWork()));
+	}
+
+	#publishBackgroundWork(before: number, actions: readonly ChatAction[]): void {
 		for (const action of actions) this.#dispatchChat(action);
 		const after = this.#ctx.store.chat(this.id)?.backgroundWork?.length ?? 0;
 		if (after !== before) {
@@ -681,6 +726,7 @@ export class PiSession {
 
 	async dispose(): Promise<void> {
 		this.#disposed = true;
+		this.#subagents.dispose();
 		this.#closeDialogs();
 		const agent = this.#agent;
 		this.#agent = undefined;
@@ -746,6 +792,7 @@ export class PiSession {
 				if (this.#turn === turn && !turn.cancelledByClient) this.#dispatchChat(action);
 			},
 			attempt,
+			this.#subagentLinks,
 		);
 		const turn: ActiveTurn = { id: turnId, mapper, startedAt: Date.now(), cancelledByClient: false };
 		this.#turn = turn;
@@ -934,9 +981,14 @@ export class PiSession {
 		this.#closeDialogs();
 		previous.mapper.finish({ kind: "complete" }, Date.now() - previous.startedAt);
 		const turnId = crypto.randomUUID();
-		const mapper = new TurnMapper(turnId, (action) => {
-			if (this.#turn === turn && !turn.cancelledByClient) this.#dispatchChat(action);
-		});
+		const mapper = new TurnMapper(
+			turnId,
+			(action) => {
+				if (this.#turn === turn && !turn.cancelledByClient) this.#dispatchChat(action);
+			},
+			0,
+			this.#subagentLinks,
+		);
 		const turn: ActiveTurn = { id: turnId, mapper, startedAt: Date.now(), cancelledByClient: false };
 		this.#dispatchChat({ type: ActionType.ChatTurnStarted, turnId, startedAt: new Date().toISOString(), message });
 		if (this.#turn === previous) this.#turn = turn;
@@ -1017,12 +1069,20 @@ export class PiSession {
 		this.#ctx.logger.debug("extension notification outside a turn", { session: this.id, level, message });
 	}
 
-	/** Watches an agent for runs started outside the host. Returns the agent. */
+	/** Links to the subagent chats a `subagent` tool call started, for its result. */
+	readonly #subagentLinks = (toolCallId: string) => this.#subagents.linksFor(toolCallId);
+
+	/**
+	 * Watches an agent for runs started outside the host, and for subagents.
+	 * Subscribed before any run's turn mapper, so a `subagent` call's run is
+	 * tracked by the time the mapper publishes its result. Returns the agent.
+	 */
 	#observe(agent: PiAgent): PiAgent {
 		if (!this.#observed.has(agent)) {
 			this.#observed.add(agent);
 			agent.subscribe((event) => {
 				if (event.type === "queue_update") this.#piQueue = { steering: event.steering, followUp: event.followUp };
+				this.#subagents.handle(event);
 				this.#onAgentEvent(event);
 			});
 			this.#loadCommands(agent.commands());
@@ -1129,9 +1189,14 @@ export class PiSession {
 
 	#startExternalTurn(message: Message): void {
 		const turnId = crypto.randomUUID();
-		const mapper = new TurnMapper(turnId, (action) => {
-			if (!turn.cancelledByClient) this.#dispatchChat(action);
-		});
+		const mapper = new TurnMapper(
+			turnId,
+			(action) => {
+				if (!turn.cancelledByClient) this.#dispatchChat(action);
+			},
+			0,
+			this.#subagentLinks,
+		);
 		const turn: ActiveTurn = { id: turnId, mapper, startedAt: Date.now(), cancelledByClient: false };
 		this.#externalRun = turn;
 		this.#resumableTurn = undefined;

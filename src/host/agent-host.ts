@@ -58,6 +58,7 @@ import {
 } from "../pi/pi-session.ts";
 import { connectRpcAgent } from "../pi/rpc-agent.ts";
 import type { RpcChannel } from "../pi/rpc-channel.ts";
+import { subagentChatSession } from "../pi/subagents.ts";
 import { ProtocolError } from "../protocol/jsonrpc.ts";
 import { selectProtocolVersion } from "../protocol/version.ts";
 import { type AnnotationStore, memoryAnnotationStore } from "./annotation-store.ts";
@@ -600,7 +601,14 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 		if (this.store.channel(channel)) return;
 		const ref = this.store.ref(channel);
 		if (ref.kind === "root") return;
-		if (ref.kind === "unknown") throw ProtocolError.notFound(channel);
+		if (ref.kind === "unknown") {
+			// A subagent chat's URI names its session; loading the session rebuilds its subagent chats.
+			const owner = subagentChatSession(channel);
+			const ownerId = owner ? parseSessionUri(owner) : undefined;
+			if (!owner || !ownerId) throw ProtocolError.notFound(channel);
+			await this.#load(owner);
+			return;
+		}
 		// A forked chat's URI is the client's; until its session loads, only the fork store knows it.
 		const sessionId = forkByChat(this.forks.all(), channel)?.[1].session ?? ref.sessionId;
 		if (this.#sessions.has(sessionId)) return;
@@ -866,6 +874,10 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 				fork.renameChat(action.title);
 				return { kind: "accepted" };
 			}
+			const chatId = ref.chatId;
+			if (this.#chats().some((chat) => chat.ownsSubagentChat(chatId))) {
+				return { kind: "rejected", reason: "Subagent chats are read-only" };
+			}
 			ref = { kind: "session", sessionId: ref.sessionId };
 		}
 		switch (ref.kind) {
@@ -883,7 +895,11 @@ export class AgentHost implements ConnectionHandler, SessionHostContext, LiveSes
 			}
 			case "chat": {
 				const session = this.#chat(ref);
-				if (!session) return { kind: "ignored" };
+				if (!session) {
+					// Subagent chats show what a subagent does; nobody can type into them.
+					const owner = this.#chats().some((chat) => chat.ownsSubagentChat(ref.chatId));
+					return owner ? { kind: "rejected", reason: "Subagent chats are read-only" } : { kind: "ignored" };
+				}
 				const reason = session.validateChatAction(action);
 				if (reason) return { kind: "rejected", reason };
 				if (this.store.dispatch(channel, action, origin)) session.onChatAction(action as ChatAction);
