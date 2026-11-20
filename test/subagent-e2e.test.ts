@@ -93,8 +93,10 @@ describe("subagent chats (rpc)", () => {
 		const catalog = () =>
 			client.sessions.get(session)!.chats.filter((entry) => entry.origin?.kind === ChatOriginKind.Tool);
 		await waitUntil(() => catalog().length === 2, TIMEOUT);
-		for (const entry of catalog()) {
-			assert.deepEqual(entry.origin, { kind: ChatOriginKind.Tool, chat, toolCallId: "call-sub" });
+		for (const [index, entry] of catalog().entries()) {
+			// Each chat's origin is its own row in the parent's turn.
+			const toolCallId = `call-sub.task-${index + 1}`;
+			assert.deepEqual(entry.origin, { kind: ChatOriginKind.Tool, chat, toolCallId });
 			assert.equal(entry.interactivity, ChatInteractivity.ReadOnly);
 		}
 		assert.deepEqual(
@@ -102,15 +104,20 @@ describe("subagent chats (rpc)", () => {
 			["task-1 (delegate)", "task-2 (scout)"],
 		);
 
-		// The parent's tool call links both chats.
-		const toolPart = client.chats
+		// The parent's turn has the subagent tool call, then a completed row per child linking its chat.
+		const toolCalls = client.chats
 			.get(chat)!
 			.turns.find((turn) => turn.id === turnId)!
-			.responseParts.find((part: ResponsePart) => part.kind === "toolCall");
-		const links =
-			toolPart?.kind === "toolCall" && toolPart.toolCall.status === "completed"
-				? (toolPart.toolCall.content ?? []).filter((item) => item.type === ToolResultContentType.Subagent)
-				: [];
+			.responseParts.flatMap((part: ResponsePart) => (part.kind === "toolCall" ? [part.toolCall] : []));
+		assert.deepEqual(
+			toolCalls.map((call) => call.toolCallId),
+			["call-sub", "call-sub.task-1", "call-sub.task-2"],
+		);
+		const links = toolCalls.flatMap((call) =>
+			call.status === "completed"
+				? (call.content ?? []).filter((item) => item.type === ToolResultContentType.Subagent)
+				: [],
+		);
 		assert.deepEqual(
 			links.map((link) => link.type === ToolResultContentType.Subagent && link.resource),
 			catalog().map((entry) => entry.resource),

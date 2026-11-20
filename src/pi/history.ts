@@ -7,12 +7,11 @@ import {
 	ToolCallConfirmationReason,
 	type ToolCallState,
 	ToolCallStatus,
-	type ToolResultContent,
 	type Turn,
 	TurnState,
 } from "@microsoft/agent-host-protocol";
 import { firstText, toolInputText, toolLabels, toolResultContent } from "./tool-display.ts";
-import type { ExtraToolContent } from "./turn-mapper.ts";
+import type { ExtraToolCalls } from "./turn-mapper.ts";
 import { addCall, type PiUsage, type TurnUsage, usageInfo } from "./usage.ts";
 
 interface ContentBlock {
@@ -78,10 +77,11 @@ function newTurn(id: string, timestamp: string, message: Turn["message"]): TurnB
 /**
  * Reconstructs AHP turns from the active branch of a pi session. Each user
  * message starts a turn; assistant messages and tool results that follow it
- * become that turn's response parts. `extraContent` adds the host's own
- * content to a completed tool call (links to subagent chats).
+ * become that turn's response parts. `extraCalls` adds the host's own tool
+ * calls after a tool call completes (a row per subagent), where a live turn
+ * adds them.
  */
-export function turnsFromEntries(entries: readonly SessionEntry[], extraContent?: ExtraToolContent): Turn[] {
+export function turnsFromEntries(entries: readonly SessionEntry[], extraCalls?: ExtraToolCalls): Turn[] {
 	const turns: Turn[] = [];
 	let current: TurnBuilder | undefined;
 
@@ -141,8 +141,11 @@ export function turnsFromEntries(entries: readonly SessionEntry[], extraContent?
 			const index = current.pendingTools.get(message.toolCallId);
 			const part = index === undefined ? undefined : current.turn.responseParts[index];
 			if (part?.kind === ResponsePartKind.ToolCall && index !== undefined) {
-				part.toolCall = completed(part.toolCall, message, extraContent?.(message.toolCallId));
+				part.toolCall = completed(part.toolCall, message);
 				current.pendingTools.delete(message.toolCallId);
+				for (const toolCall of extraCalls?.(message.toolCallId) ?? []) {
+					current.turn.responseParts.push({ kind: ResponsePartKind.ToolCall, toolCall });
+				}
 			}
 		}
 	}
@@ -187,13 +190,9 @@ function appendAssistant(builder: TurnBuilder, entryId: string, message: PiMessa
 	}
 }
 
-function completed(
-	toolCall: ToolCallState,
-	message: PiMessage,
-	extra: readonly ToolResultContent[] = [],
-): ToolCallState {
+function completed(toolCall: ToolCallState, message: PiMessage): ToolCallState {
 	if (toolCall.status !== ToolCallStatus.Running) return toolCall;
-	const content = [...toolResultContent(message), ...extra];
+	const content = toolResultContent(message);
 	const labels = toolLabels(toolCall.toolName, parseArgs(toolCall.toolInput));
 	return {
 		...toolCall,

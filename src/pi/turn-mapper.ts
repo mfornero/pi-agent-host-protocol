@@ -2,8 +2,8 @@ import {
 	ActionType,
 	type ChatAction,
 	ResponsePartKind,
+	type ToolCallCompletedState,
 	ToolCallConfirmationReason,
-	type ToolResultContent,
 } from "@microsoft/agent-host-protocol";
 import type { PiEvent } from "./agent.ts";
 import { ACTIVITY_COMPACTING } from "./compaction.ts";
@@ -21,8 +21,46 @@ export type TurnOutcome =
 	| { kind: "cancelled" }
 	| { kind: "error"; message: string; resumable?: boolean };
 
-/** Content the host adds to a tool call's result, by tool call id (undefined for none). */
-export type ExtraToolContent = (toolCallId: string) => readonly ToolResultContent[] | undefined;
+/**
+ * Completed tool calls the host adds to a turn after the tool call with this
+ * id completes (undefined for none): a row per subagent a `subagent` call
+ * started.
+ */
+export type ExtraToolCalls = (toolCallId: string) => readonly ToolCallCompletedState[] | undefined;
+
+/** The lifecycle actions that add an already completed tool call to a turn. */
+export function completedToolCallActions(turnId: string, call: ToolCallCompletedState): ChatAction[] {
+	const { toolCallId, _meta } = call;
+	return [
+		{
+			type: ActionType.ChatToolCallStart,
+			turnId,
+			toolCallId,
+			toolName: call.toolName,
+			displayName: call.displayName,
+			...(_meta ? { _meta } : {}),
+		},
+		{
+			type: ActionType.ChatToolCallReady,
+			turnId,
+			toolCallId,
+			invocationMessage: call.invocationMessage,
+			confirmed: call.confirmed,
+			...(_meta ? { _meta } : {}),
+		},
+		{
+			type: ActionType.ChatToolCallComplete,
+			turnId,
+			toolCallId,
+			result: {
+				success: call.success,
+				pastTenseMessage: call.pastTenseMessage,
+				...(call.content ? { content: call.content } : {}),
+			},
+			...(_meta ? { _meta } : {}),
+		},
+	];
+}
 
 /** Activity text while the model produces output that is not a tool call. */
 export const ACTIVITY_THINKING = "Thinking";
@@ -81,19 +119,19 @@ export class TurnMapper {
 	readonly #runningTools = new Map<string, string>();
 
 	readonly #attempt: number;
-	readonly #extraContent: ExtraToolContent | undefined;
+	readonly #extraCalls: ExtraToolCalls | undefined;
 
 	/**
 	 * @param attempt Distinguishes the runs of one turn (0 for the first, then
 	 *   one per `chat/turnResume`) so their response part ids never collide.
-	 * @param extraContent Content the host adds to a completed tool call's
-	 *   result, such as links to the subagent chats a `subagent` call started.
+	 * @param extraCalls Tool calls the host adds after a tool call completes,
+	 *   such as a row per subagent a `subagent` call started.
 	 */
-	constructor(turnId: string, emit: (action: ChatAction) => void, attempt = 0, extraContent?: ExtraToolContent) {
+	constructor(turnId: string, emit: (action: ChatAction) => void, attempt = 0, extraCalls?: ExtraToolCalls) {
 		this.#attempt = attempt;
 		this.turnId = turnId;
 		this.#emit = emit;
-		this.#extraContent = extraContent;
+		this.#extraCalls = extraCalls;
 	}
 
 	get aborted(): boolean {
@@ -140,7 +178,7 @@ export class TurnMapper {
 			case "tool_execution_end": {
 				this.#startTool(event.toolCallId, event.toolName);
 				this.#readyTool(event.toolCallId, event.toolName, undefined);
-				const content = [...toolResultContent(event.result), ...(this.#extraContent?.(event.toolCallId) ?? [])];
+				const content = toolResultContent(event.result);
 				const labels = toolLabels(event.toolName, this.#toolArgs.get(event.toolCallId));
 				this.#emit({
 					type: ActionType.ChatToolCallComplete,
@@ -153,6 +191,9 @@ export class TurnMapper {
 						...(event.isError ? { error: { message: firstText(content) ?? "Tool failed" } } : {}),
 					},
 				});
+				for (const call of this.#extraCalls?.(event.toolCallId) ?? []) {
+					for (const action of completedToolCallActions(this.turnId, call)) this.#emit(action);
+				}
 				this.#runningTools.delete(event.toolCallId);
 				// Another tool may still be running; otherwise the model is called again with the results.
 				this.#setActivity([...this.#runningTools.values()].at(-1) ?? ACTIVITY_THINKING);

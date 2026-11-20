@@ -23,10 +23,11 @@ import {
 	normalizeStatus,
 	notifiedChildren,
 	parseRunStatus,
+	subagentCallId,
+	subagentCalls,
 	subagentChatId,
 	subagentChatSession,
 	subagentChatUri,
-	subagentLinks,
 	subagentRunFromResult,
 	subagentTitle,
 	subagentWork,
@@ -221,21 +222,41 @@ describe("chats", () => {
 		assert.equal(subagentTitle({ label: "scout", agent: "scout", status: "stopped" }), "scout · stopped");
 	});
 
-	test("the parent's tool call links one subagent content per child", () => {
+	test("each child gets a completed tool call of its own that opens its chat", () => {
 		const { args, details } = json("workflow-0.84.tool-result.json");
-		const links = subagentLinks(SESSION, subagentRunFromResult("call-1", args, details));
-		assert.equal(links.length, 2);
-		assert.deepEqual(links[0], {
-			type: ToolResultContentType.Subagent,
-			resource: subagentChatUri(SESSION, subagentChatId(WORKFLOW_RUN, "task-1")),
-			title: "task-1 (delegate)",
-			agentName: "delegate",
-			description: "Run 'sleep 20' with the bash tool, then reply with exactly: done",
+		const calls = subagentCalls(SESSION, subagentRunFromResult("call-1", args, details));
+		assert.equal(calls.length, 2);
+		const resource = subagentChatUri(SESSION, subagentChatId(WORKFLOW_RUN, "task-1"));
+		assert.deepEqual(calls[0], {
+			status: "completed",
+			toolCallId: "call-1.task-1",
+			toolName: "subagent",
+			displayName: "task-1 (delegate)",
+			invocationMessage: "Starting task-1 (delegate)",
+			confirmed: "not-needed",
+			success: true,
+			pastTenseMessage: "Started task-1 (delegate)",
+			content: [
+				{
+					type: ToolResultContentType.Subagent,
+					resource,
+					title: "task-1 (delegate)",
+					agentName: "delegate",
+					description: "Run 'sleep 20' with the bash tool, then reply with exactly: done",
+				},
+			],
+			_meta: {
+				toolKind: "subagent",
+				subagentChatUri: resource,
+				subagentAgentName: "delegate",
+				subagentDescription: "task-1: Run 'sleep 20' with the bash tool, then reply w…",
+			},
 		});
-		assert.deepEqual(subagentLinks(SESSION, undefined), []);
+		assert.equal(calls[1]?.toolCallId, subagentCallId("call-1", "task-2"));
+		assert.deepEqual(subagentCalls(SESSION, undefined), []);
 	});
 
-	test("restored history carries the links on the subagent tool call", () => {
+	test("restored history has a row per child after the subagent tool call", () => {
 		const { args, details } = json("workflow-0.84.tool-result.json");
 		const run = subagentRunFromResult("call-1", args, details);
 		const history = [
@@ -262,13 +283,16 @@ describe("chats", () => {
 				},
 			},
 		] as unknown as SessionEntry[];
-		const [turn] = turnsFromEntries(history, (id) => (id === "call-1" ? subagentLinks(SESSION, run) : undefined));
-		const part = turn?.responseParts[0];
-		assert.equal(part?.kind, "toolCall");
-		const content = part?.kind === "toolCall" && part.toolCall.status === "completed" ? part.toolCall.content : [];
+		const [turn] = turnsFromEntries(history, (id) => (id === "call-1" ? subagentCalls(SESSION, run) : undefined));
 		assert.deepEqual(
-			content?.map((item) => item.type),
-			["text", "subagent", "subagent"],
+			turn?.responseParts.map((part) =>
+				part.kind === "toolCall" ? [part.toolCall.toolCallId, part.toolCall.status] : [],
+			),
+			[
+				["call-1", "completed"],
+				["call-1.task-1", "completed"],
+				["call-1.task-2", "completed"],
+			],
 		);
 	});
 });

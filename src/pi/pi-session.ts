@@ -339,7 +339,7 @@ export class PiSession {
 		const createdAt = header?.timestamp ?? new Date().toISOString();
 		const session = new PiSession(ctx, id, cwd, manager, createdAt, binding);
 		session.#subagents.restore(entries);
-		const turns = turnsFromEntries([...entries], (toolCallId) => session.#subagents.linksFor(toolCallId));
+		const turns = turnsFromEntries([...entries], (toolCallId) => session.#subagents.callsFor(toolCallId));
 		const title = name ?? (turns[0] ? titleFrom(turns[0].message.text) : UNTITLED);
 		const lastTurn = turns.at(-1);
 		const modifiedAt =
@@ -804,7 +804,7 @@ export class PiSession {
 				if (this.#turn === turn && !turn.cancelledByClient) this.#dispatchChat(action);
 			},
 			attempt,
-			this.#subagentLinks,
+			this.#subagentCalls,
 		);
 		const turn: ActiveTurn = { id: turnId, mapper, startedAt: Date.now(), cancelledByClient: false };
 		this.#turn = turn;
@@ -1024,7 +1024,7 @@ export class PiSession {
 				if (this.#turn === turn && !turn.cancelledByClient) this.#dispatchChat(action);
 			},
 			0,
-			this.#subagentLinks,
+			this.#subagentCalls,
 		);
 		const turn: ActiveTurn = { id: turnId, mapper, startedAt: Date.now(), cancelledByClient: false };
 		this.#dispatchChat({ type: ActionType.ChatTurnStarted, turnId, startedAt: new Date().toISOString(), message });
@@ -1110,8 +1110,8 @@ export class PiSession {
 		this.#ctx.logger.debug("extension notification outside a turn", { session: this.id, level, message });
 	}
 
-	/** Links to the subagent chats a `subagent` tool call started, for its result. */
-	readonly #subagentLinks = (toolCallId: string) => this.#subagents.linksFor(toolCallId);
+	/** The rows, one per subagent, that follow a `subagent` tool call in its turn. */
+	readonly #subagentCalls = (toolCallId: string) => this.#subagents.callsFor(toolCallId);
 
 	/**
 	 * Watches an agent for runs started outside the host, and for subagents.
@@ -1236,7 +1236,7 @@ export class PiSession {
 				if (!turn.cancelledByClient) this.#dispatchChat(action);
 			},
 			0,
-			this.#subagentLinks,
+			this.#subagentCalls,
 		);
 		const turn: ActiveTurn = { id: turnId, mapper, startedAt: Date.now(), cancelledByClient: false };
 		this.#externalRun = turn;

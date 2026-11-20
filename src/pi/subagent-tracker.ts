@@ -11,7 +11,7 @@ import {
 	type ChatSummary,
 	SessionStatus,
 	type StateAction,
-	type ToolResultContent,
+	type ToolCallCompletedState,
 } from "@microsoft/agent-host-protocol";
 import type { Logger } from "../core/logger.ts";
 import type { StateStore } from "../core/state-store.ts";
@@ -28,9 +28,10 @@ import {
 	SUBAGENT_TOOL,
 	type SubagentChild,
 	type SubagentRun,
+	subagentCallId,
+	subagentCalls,
 	subagentChatId,
 	subagentChatUri,
-	subagentLinks,
 	subagentRunFromResult,
 	subagentTitle,
 	subagentWork,
@@ -149,8 +150,8 @@ export class SubagentTracker {
 	 * Rebuilds the subagent runs of a chat loaded from its session file: every
 	 * `subagent` tool result on its branch, read from its status file, or from
 	 * the session files when `/tmp` was cleaned. Their chats are added by
-	 * `publish()`, once the parent chat is in the store; `linksFor` works
-	 * before that, so the parent's history can carry the links.
+	 * `publish()`, once the parent chat is in the store; `callsFor` works
+	 * before that, so the parent's history can carry the rows.
 	 */
 	restore(entries: readonly SessionEntry[]): void {
 		this.#publishing = false;
@@ -235,13 +236,13 @@ export class SubagentTracker {
 	}
 
 	/**
-	 * The links the parent's `subagent` tool call carries, for the result the
-	 * turn mapper publishes. Undefined for calls that started no subagents.
+	 * The rows, one per subagent, that follow the parent's `subagent` tool call
+	 * in its turn. Undefined for calls that started no subagents.
 	 */
-	linksFor(toolCallId: string): ToolResultContent[] | undefined {
+	callsFor(toolCallId: string): ToolCallCompletedState[] | undefined {
 		const run = [...this.#runs.values()].find((candidate) => candidate.run.toolCallId === toolCallId);
 		if (!run) return undefined;
-		return subagentLinks(this.#host.store.sessionResource(this.#host.sessionId), this.#runOf(run), this.#host.scope);
+		return subagentCalls(this.#host.store.sessionResource(this.#host.sessionId), this.#runOf(run), this.#host.scope);
 	}
 
 	/** The `subagent` background work entries of the children still running. */
@@ -324,7 +325,12 @@ export class SubagentTracker {
 			// Until its first turn, a child is shown working; its turns decide from then on.
 			status: SessionStatus.InProgress | SessionStatus.IsRead,
 			modifiedAt: now,
-			origin: { kind: ChatOriginKind.Tool, chat: this.#host.parentChat, toolCallId },
+			// Its row in the parent's turn (see `subagentCalls`).
+			origin: {
+				kind: ChatOriginKind.Tool,
+				chat: this.#host.parentChat,
+				toolCallId: subagentCallId(toolCallId, child.key),
+			},
 			interactivity: ChatInteractivity.ReadOnly,
 		};
 		const state: ChatState = { ...summary, turns: [] };

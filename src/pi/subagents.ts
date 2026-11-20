@@ -9,10 +9,10 @@ import {
 	type Message,
 	MessageKind,
 	ResponsePartKind,
+	type ToolCallCompletedState,
 	ToolCallConfirmationReason,
 	type ToolCallState,
 	ToolCallStatus,
-	type ToolResultContent,
 	ToolResultContentType,
 	type Turn,
 	TurnState,
@@ -375,20 +375,57 @@ export function mergeChildren(known: readonly SubagentChild[], update: readonly 
 	return [...merged.values()];
 }
 
-/** The content a `subagent` tool call carries: one link per child chat. */
-export function subagentLinks(
+/** The id of the host-made tool call that stands for one child in its parent's turn. */
+export function subagentCallId(toolCallId: string, key: string): string {
+	return `${toolCallId}.${key}`;
+}
+
+/**
+ * One completed tool call per child, placed in the parent's turn after the
+ * `subagent` call that started them. VS Code shows one subagent row per tool
+ * call, for its first subagent link only, so a call starting seven children
+ * would show one; each child gets a row of its own that opens its chat. The
+ * child's chat names its row as its origin (`subagentCallId`).
+ */
+export function subagentCalls(
 	sessionResource: string,
 	run: SubagentRun | undefined,
 	scope?: string,
-): ToolResultContent[] {
+): ToolCallCompletedState[] {
 	if (!run) return [];
-	return run.children.map((child) => ({
-		type: ToolResultContentType.Subagent,
-		resource: subagentChatUri(sessionResource, subagentChatId(run.runId, child.key, scope)),
-		title: subagentTitle(child),
-		agentName: child.agent,
-		...(child.task ? { description: cut(child.task, DESCRIPTION_LENGTH) } : {}),
-	}));
+	return run.children.map((child) => {
+		const resource = subagentChatUri(sessionResource, subagentChatId(run.runId, child.key, scope));
+		const title = subagentTitle({ label: child.label, agent: child.agent });
+		// The row's label: the child's name, then its task when the name isn't already the task.
+		const task = taskLabel(child.task);
+		const label = task && task !== child.label ? `${child.label}: ${task}` : child.label;
+		return {
+			status: ToolCallStatus.Completed,
+			toolCallId: subagentCallId(run.toolCallId, child.key),
+			toolName: SUBAGENT_TOOL,
+			displayName: title,
+			invocationMessage: `Starting ${title}`,
+			confirmed: ToolCallConfirmationReason.NotNeeded,
+			success: true,
+			pastTenseMessage: `Started ${title}`,
+			content: [
+				{
+					type: ToolResultContentType.Subagent,
+					resource,
+					title,
+					agentName: child.agent,
+					...(child.task ? { description: cut(child.task, DESCRIPTION_LENGTH) } : {}),
+				},
+			],
+			// What VS Code's subagent row reads: its kind, chat, agent and label.
+			_meta: {
+				toolKind: "subagent",
+				subagentChatUri: resource,
+				subagentAgentName: child.agent,
+				subagentDescription: label,
+			},
+		};
+	});
 }
 
 /**
